@@ -13,7 +13,7 @@ A [Pi coding agent](https://github.com/mariozechner/pi) extension that runs **ev
 The extension registers a `tool_call` handler. For every call to the built-in `bash` tool it rewrites the command in place:
 
 ```
-nice -n 2 bash -c '<original command>'
+nice -n 10 bash -c '<original command>'
 ```
 
 The outer shell forks `nice`, which execs an inner `bash` at the requested niceness; every descendant process inherits it. No tool is re-registered, so the extension composes cleanly with other bash-owning extensions (renderers, background-task managers, permission gates).
@@ -28,7 +28,7 @@ or install as a pi package and add `npm:pi-bash-process-priority` to `packages` 
 
 | Environment variable | Default | Meaning |
 | --- | --- | --- |
-| `PI_BASH_NICE_LEVEL` | `2` | Nice increment applied to each command (1–19). Two levels below normal by default — polite toward interactive foreground work without slowing the agent's own jobs noticeably. |
+| `PI_BASH_NICE_LEVEL` | `10` | Nice increment applied to each command (1–19). |
 | `PI_BASH_NICE_DISABLE` | unset | Set to `1` to disable the rewrite entirely. |
 
 ## Scope

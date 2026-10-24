@@ -10,7 +10,7 @@
  * bash-owning extension (PRD-001 G3). See docs/PRD-001-bash-nice-override.md.
  *
  * Environment variables:
- *   PI_BASH_NICE_LEVEL   nice increment, clamped to 1..19 (default 2)
+ *   PI_BASH_NICE_LEVEL   nice increment, clamped to 1..19 (default 10)
  *   PI_BASH_NICE_DISABLE set to "1" to disable the rewrite entirely
  */
 

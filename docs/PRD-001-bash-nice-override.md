@@ -35,7 +35,7 @@ Desired outcome: a single, installable pi package that guarantees agent shell wo
 2. G2 — Command semantics are preserved exactly: stdout/stderr, exit codes, environment, working directory, shell features, and timeout/abort (kill-tree) behavior.
 3. G3 — No tool ownership: the extension must not re-register the `bash` tool, so it composes with any other extension that owns or renders it (e.g. `pi-ui-enhancement`, background-task managers).
 4. G4 — Fail-open: if `nice` is unavailable or refuses the adjustment, commands still run (at normal priority) and the extension degrades quietly.
-5. G5 — Configurable niceness via environment variables, with sane defaults (`2`).
+5. G5 — Configurable niceness via environment variables, with sane defaults (`10`).
 6. G6 — Works under both pi shell transports (argv `bash -c` and legacy WSL stdin transport) because the rewrite emits plain shell script text.
 
 ### Non-goals
@@ -52,7 +52,7 @@ Desired outcome: a single, installable pi package that guarantees agent shell wo
 | ID | Requirement |
 | --- | --- |
 | FR-1 | For every `tool_call` event with `toolName === "bash"`, the handler rewrites `event.input.command` in place to the wrapped form (§5.2). |
-| FR-2 | The niceness increment defaults to `2` (two levels below normal; resolved from open question §10.3 after real-world feedback) and is overridden by `PI_BASH_NICE_LEVEL` (integer, clamped to 1–19). |
+| FR-2 | The niceness increment defaults to `10` (the GNU `nice` default) and is overridden by `PI_BASH_NICE_LEVEL` (integer, clamped to 1–19). |
 | FR-3 | Setting `PI_BASH_NICE_DISABLE=1` disables all rewriting for the session. |
 | FR-4 | Commands that are already nice-wrapped (trimmed command's first word is `nice`, or equals `nice`) are passed through unmodified (no double wrapping). |
 | FR-5 | Empty or whitespace-only commands are passed through unmodified. |
@@ -184,7 +184,7 @@ Child pi sessions (subagents) load the same user extensions and therefore inheri
 
 - escaping: plain command; single quotes (`don't`); `$()`/backticks; newlines; embedded `'\''` sequences — assert exact wrapped output.
 - skip rules: empty/whitespace; first token `nice`; `PI_BASH_NICE_DISABLE`; unsupported platform.
-- level parsing: default 2; `PI_BASH_NICE_LEVEL=15`; clamp 0 → 1, 25 → 19; unparsable → 2.
+- level parsing: default 10; `PI_BASH_NICE_LEVEL=15`; clamp 0 → 1, 25 → 19; unparsable → 10.
 
 ### 8.2 Integration acceptance (manual, R2/R3)
 
@@ -214,4 +214,4 @@ Child pi sessions (subagents) load the same user extensions and therefore inheri
 
 1. Should a future version expose per-command exclusions (e.g. never wrap `docker`, wrap everything else)? Deferred (N3) — needs a config story first.
 2. Should wrapped calls surface a hint in `details` (requires tool ownership) or a `# nice:` comment convention like pi-ui-enhancement's intent headers? Parked.
-3. ~~Default level 10 vs 15~~ **Resolved (2026-10-24):** default is `2` — two levels below normal, enough to keep agent workloads from interfering with interactive foreground work while leaving CI-style jobs essentially unaffected. Override with `PI_BASH_NICE_LEVEL` for stronger politeness.
+3. Default level 10 vs 15 — 10 matches `nice`'s own default and is unlikely to starve CI-style workloads; revisit after real-world R2 feedback.

@@ -5,12 +5,7 @@
  * no I/O, so it is safe to call on the tool_call hot path (PRD-001 NFR-1/NFR-3).
  */
 
-/**
- * Default nice increment: 2 — two levels below normal, enough to keep agent
- * workloads from interfering with interactive foreground work while staying
- * clearly above batch-job territory (GNU nice's own default is 10).
- */
-export const DEFAULT_NICE_LEVEL = 2;
+export const DEFAULT_NICE_LEVEL = 10;
 
 /** Unprivileged nice increments are only meaningful (and permitted) in 1..19. */
 export const MIN_NICE_LEVEL = 1;
@@ -27,7 +22,7 @@ export interface NiceConfig {
 
 export type EnvLike = Record<string, string | undefined>;
 
-/** Parse PI_BASH_NICE_LEVEL: default 2, clamp into 1..19, unparsable → default. */
+/** Parse PI_BASH_NICE_LEVEL: default 10, clamp into 1..19, unparsable → default. */
 export function parseLevel(raw: string | undefined): number {
 	if (raw === undefined || raw.trim() === "") return DEFAULT_NICE_LEVEL;
 	const parsed = Number.parseInt(raw, 10);
