@@ -48,18 +48,18 @@ test("buildNiceCommand does not skip when nice is not the first token", () => {
 });
 
 test("parseLevel: default, valid, clamped, unparsable", () => {
-	assert.equal(parseLevel(undefined), 10);
-	assert.equal(parseLevel(``), 10);
+	assert.equal(parseLevel(undefined), 2, "product default: two levels below normal");
+	assert.equal(parseLevel(``), 2);
 	assert.equal(parseLevel(`15`), 15);
 	assert.equal(parseLevel(`0`), 1, "clamped to min");
 	assert.equal(parseLevel(`-5`), 1);
 	assert.equal(parseLevel(`25`), 19, "clamped to max");
-	assert.equal(parseLevel(`abc`), 10);
+	assert.equal(parseLevel(`abc`), 2);
 });
 
 test("resolveConfig: env overrides and platform pre-filter", () => {
 	assert.deepEqual(resolveConfig({}, "linux"), {
-		level: 10,
+		level: 2,
 		disabled: false,
 		supportedPlatform: true,
 	});
