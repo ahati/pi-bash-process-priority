@@ -1,0 +1,52 @@
+{
+  "name": "pi-bash-process-priority",
+  "version": "0.0.1",
+  "description": "Run every model-issued bash command at a lower CPU priority (higher nice value) in the Pi coding agent, via a tool_call command rewrite.",
+  "type": "module",
+  "main": "./index.ts",
+  "files": [
+    "index.ts",
+    "src",
+    "README.md",
+    "LICENSE",
+    "docs"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "npm run typecheck",
+    "test": "tsx --test tests/*.test.ts",
+    "check": "npm run lint && npm run test",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-extension",
+    "pi-coding-agent",
+    "coding-agent",
+    "bash",
+    "nice",
+    "renice",
+    "process-priority",
+    "cpu-priority",
+    "scheduling",
+    "tool-override"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^1.4.0",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2"
+  }
+}
