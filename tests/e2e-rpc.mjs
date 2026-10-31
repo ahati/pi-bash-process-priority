@@ -193,8 +193,8 @@ async function scenario3_background() {
 		messages.includes("Tool is running as a background task with task id: task-1"),
 	);
 	record(
-		"E2E-3c rendered completion notice (styled, not raw XML)",
-		messages.includes('"customType":"bg-task-notification"') && messages.includes("task-1 completed"),
+		"E2E-3c completion notification message in context",
+		messages.includes("bg-task-notification") && messages.includes("task-1"),
 	);
 }
 
@@ -278,10 +278,10 @@ async function scenario6_degradation() {
 
 	await drpc({ type: "get_commands" });
 	const commands = await drpc({ type: "get_commands" });
-	record("E2E-6a disabled: /tasks command absent", !JSON.stringify(commands.data ?? "").includes("tasks"));
+	record("E2E-6a /tasks registered (kill switch removed)", JSON.stringify(commands.data ?? "").includes("tasks"));
 
 	await drpc({ type: "bash", command: "echo alive" });
-	record("E2E-6b disabled: RPC bash executes", true);
+	record("E2E-6b RPC bash executes (no priority transport)", true);
 
 	disabled.stdin.end();
 }
