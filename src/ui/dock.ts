@@ -6,10 +6,11 @@
  * state machine can be unit-tested with a fake list.
  */
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Component, TUI } from "@earendil-works/pi-tui";
+import { truncateToWidth, type Component, type TUI } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { BgTask, TaskManagerApi } from "../types.ts";
 import { dockFrame, dockRow, statusColorToken } from "./format.ts";
+import { debugLog } from "../debug.ts";
 
 export const DOCK_WIDGET_KEY = "bg-tasks";
 
@@ -140,6 +141,7 @@ export function installDock(
 	const refresh = (): void => {
 		controller.reconcile();
 		const count = tasks().length;
+		debugLog("dock:refresh", { count, visible });
 		if (count === 0) {
 			stopTicker();
 			hide();
@@ -181,14 +183,21 @@ export function installDock(
 				lastWidth = width;
 				lastSignature = sig;
 				stale = false;
-				const rows = tasks();
-				if (rows.length === 0) {
+				const all = tasks();
+				if (all.length === 0) {
 					lastRendered = [];
 					return lastRendered;
 				}
+				// pi caps extension widgets at 10 lines (MAX_WIDGET_LINES):
+				// 2 rules + 1 count line + rows ≤ 7. Newest first is the
+				// registry order already, so clamping drops the oldest.
+				const rows = all.slice(0, 7);
 				const selectedIndex = controller.inDock() ? controller.selectedIndex() : -1;
 				const lines = rows.map((task, i) => colorBullet(dockRow(task, i === selectedIndex, width), task.status, theme));
-				lastRendered = dockFrame(lines, width);
+				const framed = dockFrame(lines, width);
+				const countLine = theme.fg("dim", `${all.length} task(s) · /tasks`);
+				framed.push(truncateToWidth(countLine, width));
+				lastRendered = framed;
 				return lastRendered;
 			},
 			dispose() {
@@ -197,8 +206,16 @@ export function installDock(
 		};
 		widget = component;
 		visible = true;
+		debugLog("dock:factory installed", { rows: tasks().length });
 		return component;
 	};
+
+	// Registry transitions drive install/refresh (PRD-003 §7.8): without this
+	// subscription the widget stays cleared forever — the empty-cache bug.
+	const unsubscribe = registry.onChange(() => {
+		debugLog("dock:registry change");
+		refresh();
+	});
 
 	// Initial state: only show when tasks already exist.
 	refresh();
@@ -206,10 +223,9 @@ export function installDock(
 
 	const dispose = (): void => {
 		stopTicker();
-		visible = false;
+		unsubscribe();
 		widget?.dispose?.();
 		widget = undefined;
-		controller.exitDock();
 		ctx.ui.setWidget(DOCK_WIDGET_KEY, undefined, { placement: "belowEditor" });
 	};
 

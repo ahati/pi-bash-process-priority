@@ -148,6 +148,11 @@ export interface TaskManagerApi {
 	hasRunning(): boolean;
 	/** Kill everything still running; idempotent; for session_shutdown. */
 	disposeAll(reason?: string): Promise<void>;
+	/**
+	 * Subscribe to registry changes (spawn/adopt/exit/kill). Returns an
+	 * unsubscribe function. UI surfaces (dock, panel) use this to refresh.
+	 */
+	onChange(listener: () => void): () => void;
 }
 
 // ---------------------------------------------------------------------------

@@ -31,6 +31,7 @@ import type { KeybindingsManager } from "@earendil-works/pi-coding-agent";
 import { buildNiceCommand, resolveConfig, type NiceConfig } from "./src/nice.ts";
 import { probeIonice, probeNice, probeRenice } from "./src/probe.ts";
 import { resolveBgConfig, resolveLogDir } from "./src/config.ts";
+import { debugLog, debugLogError, initDebugLog } from "./src/debug.ts";
 import { createTaskManager } from "./src/registry.ts";
 import {
 	createBackgroundAwareBashTool,
@@ -40,7 +41,6 @@ import {
 	resetBashOverrideState,
 } from "./src/bash-override.ts";
 import { DockController, installDock } from "./src/ui/dock.ts";
-import { installFooter } from "./src/ui/footer.ts";
 import { openTasksPanel } from "./src/ui/panel.ts";
 import { DockEditor } from "./src/dock-editor.ts";
 import { formatDuration } from "./src/ui/format.ts";
@@ -142,6 +142,8 @@ export default function (pi: ExtensionAPI) {
 		resetBashOverrideState();
 
 		const bg = resolveBgConfig(process.env, process.platform);
+		initDebugLog(resolveLogDir(bg, ctx.cwd));
+		debugLog("session_start", { mode: ctx.mode, hasUI: ctx.hasUI, cwd: ctx.cwd, bgNice: bg.bgNice, disabled: bg.disabled });
 
 		// PRD-003 disabled or unsupported platform → exact PRD-001 behavior.
 		if (bg.disabled || !bg.supportedPlatform) {
@@ -185,25 +187,36 @@ export default function (pi: ExtensionAPI) {
 			onChange: () => {
 				// Dock/footer refresh themselves via registry listeners installed below.
 			},
-			onTransition: (kind, task) => appendTaskState(kind, task),
+			onTransition: (kind, task) => {
+				debugLog("onTransition", { kind, id: task.id });
+				appendTaskState(kind, task);
+			},
 			onTerminal: (task) => {
+				debugLog("onTerminal", task);
 				appendTaskState("terminal", task);
 				const details: BgNotificationDetails = {
 					kind: "terminal",
 					task,
 					durationText: task.endedAt ? formatDuration(Math.max(0, task.endedAt - task.startedAt)) : undefined,
 				};
-				pi.sendMessage(
-					{
-						customType: "bg-task-notification",
-						content: notificationXml(task),
-						display: true,
-						details,
-					},
-					{ deliverAs: "followUp", triggerTurn: true },
-				);
+				debugLog("sendMessage:followUp", { id: task.id, status: task.status });
+				try {
+					pi.sendMessage(
+						{
+							customType: "bg-task-notification",
+							content: notificationXml(task),
+							display: true,
+							details,
+						},
+						{ deliverAs: "followUp", triggerTurn: true },
+					);
+					debugLog("sendMessage:followUp returned", task.id);
+				} catch (error) {
+					debugLogError("sendMessage:followUp threw", error);
+				}
 			},
 			onStillRunning: (task, elapsedSeconds) => {
+				debugLog("onStillRunning", { id: task.id, elapsedSeconds });
 				appendTaskState("still-running", task);
 				const details: BgNotificationDetails = {
 					kind: "still-running",
@@ -306,9 +319,11 @@ export default function (pi: ExtensionAPI) {
 
 		// UI (TUI only, §7.7-§7.9).
 		if (ctx.mode === "tui" && ctx.hasUI) {
+			// PRD-004 v3.2: the normal pi footer is left untouched; the dock
+			// (with its own "N task(s) · /tasks" line) is the only injected
+			// chrome — a below-editor widget that renders above the footer.
 			const controller = new DockController(() => (registry ? registry.list().filter((task) => task.status === "running") : []));
 			const dock = installDock(ctx, registry, controller);
-			const footer = installFooter(ctx, registry);
 			const prevEditor = ctx.ui.getEditorComponent();
 			if (!prevEditor) {
 				ctx.ui.setEditorComponent((tui, theme, keybindings) => {
@@ -328,7 +343,6 @@ export default function (pi: ExtensionAPI) {
 			}
 			disposeUI = () => {
 				dock.dispose();
-				footer.dispose();
 				if (editorInstalled) ctx.ui.setEditorComponent(undefined);
 				editorInstalled = false;
 			};

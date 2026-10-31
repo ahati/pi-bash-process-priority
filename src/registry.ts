@@ -117,6 +117,7 @@ export function resolveTaskId(tasks: BgTask[], idOrPrefix: string): BgTask {
 
 class TaskManager implements TaskManagerApi {
 	private readonly options: TaskManagerOptions;
+	private readonly changeListeners = new Set<() => void>();
 	private readonly logDir: string;
 	private readonly killGraceMs: number;
 	private readonly logBytes: number;
@@ -653,11 +654,19 @@ class TaskManager implements TaskManagerApi {
 	}
 
 	private emitChange(): void {
-		try {
-			this.options.onChange?.();
-		} catch {
-			// listener errors never affect the registry
+		this.options.onChange?.();
+		for (const listener of this.changeListeners) {
+			try {
+				listener();
+			} catch {
+				// UI listener errors never affect the registry
+			}
 		}
+	}
+
+	onChange(listener: () => void): () => void {
+		this.changeListeners.add(listener);
+		return () => this.changeListeners.delete(listener);
 	}
 }
 
