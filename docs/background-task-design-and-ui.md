@@ -160,7 +160,7 @@ Activation matrix:
 
 | Condition | Behavior |
 | --- | --- |
-| `PI_BG_TASKS_DISABLE=1` | No override, no tool, no UI. PRD-001 `tool_call` rewrite stays authoritative. |
+| Unsupported platform (win32/WSL-less per PRD-002) | No override, no tool, no UI. PRD-001 `tool_call` rewrite stays authoritative. |
 | Override creation fails (unexpected) | Same as above + one diagnostic (fail-open, PRD-001 G4 style). |
 | TUI mode | Full UI (dock, footer, panel, editor). |
 | RPC mode | Tools + notifications; `ctx.ui.notify` for state changes; no custom components (`ctx.hasUI` guard). |
@@ -417,7 +417,7 @@ Implementation notes: pure `format.ts` helpers produce the line strings (unit-te
 ## 11. Relationship to PRD-001
 
 - While the override is active it is the **single source** of nice wrapping (applied inside `exec`); the `tool_call` rewrite is bypassed to guarantee exactly one `nice` layer (FR-4 of PRD-001 generalized).
-- With `PI_BG_TASKS_DISABLE=1` (or on failure) the PRD-001 hook is the active mechanism again — no behavioral regression path.
+- On override-creation failure the PRD-001 hook is the active mechanism again — no behavioral regression path.
 - PRD-001's tests remain the acceptance baseline for G1 (byte-identical semantics), plus new adoption tests (§12).
 
 ## 12. Testing and validation

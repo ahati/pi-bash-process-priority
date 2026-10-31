@@ -129,7 +129,6 @@ pi.on("user_bash", () => ({ operations: sharedOperations }));
 - RPC-initiated shell commands execute through the masked tool's executor → **fg nice** (PRD-001 contract amended: every agent shell execution is niced).
 - `bash_execution_update` streaming, results, and `abort_bash` semantics are produced by the same `executeBashWithOperations` pipeline — unchanged.
 - No control logic, no parsing, no registry tracking of RPC bash (N1).
-- With `PI_BG_TASKS_DISABLE=1` the hook returns `undefined` (stock behavior).
 
 ## 8. Limitations
 
@@ -168,7 +167,7 @@ pi.on("user_bash", () => ({ operations: sharedOperations }));
    - TUI: `bash { sleep 60, background: true }` → immediate task notice, dock row, bg nice + ionice on the same PID, completion wake; foreground path byte-identical to stock (PRD-003 harness).
    - RPC: `steer` adopt phrase → `kind: "adopted"` event + reniced PID; `entry_appended` stream shows `spawned → adopted → terminal`; `get_entries` poll lists tasks.
    - RPC `bash "echo hi"` → normal streaming, NI 10 (transport); `abort_bash` still kills it.
-3. **Degradation** — `PI_BG_TASKS_DISABLE=1`: tool registers without `background` effect (param rejected or ignored with a notice — pick: ignored + notice), hook returns `undefined`, no events.
+3. **Degradation** — extension error paths: malformed args fall back to command-path execution; a throwing hook is reported via `extension_error` without breaking the session.
 
 ## 12. Future work
 

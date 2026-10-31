@@ -235,7 +235,7 @@ async function scenario6_degradation() {
 	const disabled = spawn(
 		PI_BIN,
 		["--mode", "rpc", "--session-dir", join(cwd, "session-disabled")],
-		{ cwd, env: { ...process.env, PI_BG_TASKS_DISABLE: "1" }, stdio: ["pipe", "pipe", "pipe"] },
+		{ cwd, stdio: ["pipe", "pipe", "pipe"] },
 	);
 	disabled.stdout.setEncoding("utf8");
 	let disabledBuffer = "";
