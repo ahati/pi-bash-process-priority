@@ -38,7 +38,15 @@ class TasksPanel implements Component {
 		private readonly registry: TaskManagerApi,
 		private readonly ui: ExtensionContext["ui"],
 		private readonly done: () => void,
-	) {}
+		private readonly initialTask?: BgTask,
+	) {
+		if (initialTask) {
+			this.view = "detail";
+			this.detailTask = initialTask;
+			void this.reloadLogs();
+			if (initialTask.status === "running") this.startTicker();
+		}
+	}
 
 	dispose(): void {
 		this.closed = true;
@@ -298,8 +306,9 @@ export async function openTasksPanel(
 	ctx: ExtensionContext,
 	registry: TaskManagerApi,
 	_keybindings: KeybindingsManager,
+	initialTask?: BgTask,
 ): Promise<void> {
 	await ctx.ui.custom<void>((_tui, theme, _keybindings, done) => {
-		return new TasksPanel(theme, registry, ctx.ui, done);
+		return new TasksPanel(theme, registry, ctx.ui, done, initialTask);
 	});
 }

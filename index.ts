@@ -336,8 +336,7 @@ export default function (pi: ExtensionAPI) {
 					const editor = new DockEditor(tui, theme, keybindings, controller, { embedWorkingStatus: true });
 					dockEditorRef = editor;
 					editor.onOpenTask = (task: BgTask) => {
-						void openTasksPanel(ctxRef as ExtensionContext, registry as TaskManagerApi, keybindings);
-						void task;
+						void openTasksPanel(ctxRef as ExtensionContext, registry as TaskManagerApi, keybindings, task);
 					};
 					editor.onKillTask = (task: BgTask) => {
 						void task;
