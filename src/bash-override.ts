@@ -635,8 +635,17 @@ export function createBackgroundAwareBashTool(cwd: string, deps: BashOverrideDep
 		theme: Parameters<NonNullable<typeof builtin.renderCall>>[1],
 		context: Parameters<NonNullable<typeof builtin.renderCall>>[2],
 	) => {
-		const managementLine = args.taskAction
-			? [truncateToWidth(theme.fg("accent", "bash") + theme.fg("dim", ` tasks ${args.taskAction}${args.taskId ? ` ${args.taskId}` : ""}`), context.expanded ? Number.MAX_SAFE_INTEGER : 200)]
+		// Junk-safe: models emit literal "null"/"undefined" strings for absent
+		// optionals — those count as absent here too (display-side guard;
+		// execution-side is covered by prepareArguments normalization).
+		const junk = (v: unknown): string => {
+			if (typeof v !== "string") return "";
+			const t = v.trim();
+			return t === "" || t === "null" || t === "undefined" ? "" : t;
+		};
+		const taskActionDisplay = junk(args.taskAction);
+		const managementLine = taskActionDisplay
+			? [truncateToWidth(theme.fg("accent", "bash") + theme.fg("dim", ` tasks ${taskActionDisplay}${junk(args.taskId) ? ` ${junk(args.taskId)}` : ""}`), context.expanded ? Number.MAX_SAFE_INTEGER : 200)]
 			: undefined;
 		const base = managementLine ? undefined : baseRenderCall?.(args as { command: string }, theme, context);
 		if (!base) {
