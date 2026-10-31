@@ -104,7 +104,8 @@ export function installDock(
 			lines.push(line);
 		}
 
-		const ruleText = (options.borderColor ?? ((t: string) => t))(RULE_CHAR.repeat(500));
+		const termWidth = (process.stdout as { columns?: number }).columns ?? 80;
+			const ruleText = (options.borderColor ?? ((t: string) => t))(RULE_CHAR.repeat(Math.max(1, termWidth - 2)));
 		lines.push(ruleText);
 
 		ctx.ui.setWidget(DOCK_WIDGET_KEY, lines, { placement: "belowEditor" });
