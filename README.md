@@ -37,6 +37,7 @@ For development: `pi --extension ./index.ts`.
 | Environment variable | Default | Meaning |
 | --- | --- | --- |
 | `PI_BASH_NICE_LEVEL` | `10` | Nice increment applied to each command (1–19). |
+| `PI_BG_ADOPT_KEY` | `ctrl+b` | Hotkey that moves the running foreground command to a background task. Overrides the built-in `tui.editor.cursorLeft` emacs binding (arrows still work); set e.g. `ctrl+t` to avoid the conflict. |
 | `PI_BASH_NICE_DISABLE` | unset | Set to `1` to disable the rewrite entirely. |
 
 ## Scope

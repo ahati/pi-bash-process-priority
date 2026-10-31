@@ -26,6 +26,7 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { KeyId } from "@earendil-works/pi-tui";
 import type { KeybindingsManager } from "@earendil-works/pi-coding-agent";
 import { buildNiceCommand, resolveConfig, type NiceConfig } from "./src/nice.ts";
 import { probeIonice, probeNice, probeRenice } from "./src/probe.ts";
@@ -264,8 +265,17 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
-		// ctrl+b — move the running foreground bash command to background (§7.2).
-		pi.registerShortcut("ctrl+b", {
+		// Adoption hotkey (§7.2). Default ctrl+b — note this shadows the
+		// built-in tui.editor.cursorLeft emacs binding (pi warns at startup and
+		// resolves the conflict in our favor; arrow keys/alt+b still move the
+		// cursor). Users who prefer cursor-left can set PI_BG_ADOPT_KEY or add
+		// { "tui.editor.cursorLeft": "left" } to keybindings.json.
+		const adoptKeyRaw = (process.env.PI_BG_ADOPT_KEY || "ctrl+b").toLowerCase().trim();
+		// Light guard: accept modifier+key strings pi's KeyId union understands.
+		const adoptKey = /^(ctrl\+|alt\+|shift\+|super\+)*([a-z0-9]|f[1-9]|f1[0-2]|[=[\\\;'/.,`\-])$/.test(adoptKeyRaw)
+			? adoptKeyRaw
+			: "ctrl+b";
+		pi.registerShortcut(adoptKey as KeyId, {
 			description: "Move the running foreground bash command to a background task",
 			handler: () => {
 				if (!registry) return;
