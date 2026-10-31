@@ -245,7 +245,12 @@ export function stripCdPrefix(command: string, cwd: string): string {
 	const match = /^\s*cd\s+(?:"([^"]*)"|'([^']*)'|(\S+))(\s*&&)/.exec(command);
 	if (!match) return command;
 	const raw = match[1] ?? match[2] ?? match[3] ?? "";
-	const normalized = raw.replace(/\/+$/, "");
+	// `.` and unexpanded $PWD always mean "the current directory" — the model
+	// emits them interchangeably with the absolute path (field finding).
+	const normalized =
+		raw === "." || raw === "$PWD" || raw === "\"$PWD\"" || raw === "'$PWD'"
+			? cwd.replace(/\/+$/, "")
+			: raw.replace(/\/+$/, "");
 	const target = cwd.replace(/\/+$/, "");
 	if (normalized !== target) return command;
 	return command.slice(match.index + match[0].length).replace(/^\s*/, "");

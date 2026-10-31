@@ -109,3 +109,13 @@ test("registry: timeoutSeconds kills the task with a timeout reason", async () =
 		await reg.disposeAll();
 	}
 });
+
+test("stripCdPrefix generalization: '.' and $PWD targets count as the cwd", async () => {
+	const { stripCdPrefix } = await import("../src/bash-override.ts");
+	const cwd = "/workspace/pi-extensions";
+	assert.equal(stripCdPrefix("cd . && ls", cwd), "ls");
+	assert.equal(stripCdPrefix("cd $PWD && ls", cwd), "ls");
+	assert.equal(stripCdPrefix('cd "$PWD" && ls', cwd), "ls");
+	assert.equal(stripCdPrefix(`cd ${cwd}/ && ls`, cwd), "ls");
+	assert.equal(stripCdPrefix("cd /tmp && ls", cwd), "cd /tmp && ls"); // different dir kept
+});
