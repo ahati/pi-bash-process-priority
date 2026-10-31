@@ -175,14 +175,27 @@ export function installDock(
 				controller.reconcile();
 				return;
 			}
-			stale = true;
-			lastSignature = signature();
-			widget?.invalidate?.();
-			ctx.ui.setWidget(DOCK_WIDGET_KEY, factory, { placement: "belowEditor" });
+			// Render lines directly and pass as content (not factory) so pi
+			// always re-creates Text components — no render-cache staleness.
+			const all = tasks();
+			const selectedIndex = controller.inDock() ? controller.selectedIndex() : -1;
+			const now = Date.now();
+			const theme = capturedTheme ?? { fg: (_c: string, t: string) => t } as Theme;
+			const w = capturedWidth;
+			const lines = all.slice(0, 7).map((task, i) =>
+				colorBullet(dockRow(task, i === selectedIndex, w, now), task.status, theme),
+			);
+			const ruleLine = RULE_CHAR.repeat(Math.max(0, w));
+			lines.unshift(ruleLine);
+			lines.push(truncateToWidth(theme.fg("dim", `${all.length} task(s) · /tasks`), w));
+			ctx.ui.setWidget(DOCK_WIDGET_KEY, lines, { placement: "belowEditor" });
 		}, 1000);
 		// Never keep the process alive just for the clock column.
 		(ticker as { unref?: () => void }).unref?.();
 	};
+
+	let capturedTheme: Theme | undefined;
+	let capturedWidth = 120;
 
 	const factory = (tui: TUI, theme: Theme): DockWidget => {
 		const component: DockWidget = {
