@@ -9,6 +9,7 @@
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import type { BgTask, TaskManagerApi } from "../types.ts";
 import { formatClock, formatDuration } from "./format.ts";
+import { debugLog } from "../debug.ts";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 
@@ -77,6 +78,15 @@ export function installDock(
 
 	const tasks = (): BgTask[] => registry.list().filter((t: BgTask) => t.status === "running");
 	const unsubscribe = registry.onChange(() => {
+		// A task can finish or time out while the dock owns the keyboard. Rows
+		// disappear from the widget on their own, so the controller must be told
+		// too — otherwise `inDock()` stays true and DockEditor keeps swallowing
+		// keystrokes until the user presses Esc (PRD-003 §7.7).
+		const wasInDock = controller.inDock();
+		controller.reconcile();
+		if (wasInDock && !controller.inDock()) {
+			debugLog("dock: auto-exited dock mode (no running rows left) — input restored");
+		}
 		render();
 		capturedTui?.requestRender();
 	});

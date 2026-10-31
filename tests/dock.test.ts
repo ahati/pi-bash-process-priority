@@ -121,6 +121,53 @@ test("installDock: widget hidden while no tasks are running", async () => {
 	}
 });
 
+test("installDock: dock mode auto-exits when the last running task finishes (input is not trapped)", async () => {
+	const reg = makeRegistry();
+	const { ctx, calls } = fakeCtx();
+	try {
+		const controller = new DockController(() => reg.list().filter((t: BgTask) => t.status === "running"));
+		const dock = installDock(ctx as never, reg, controller);
+		const task = await reg.run("sleep 20", "/tmp");
+		assert.equal(controller.enterDock(), true, "↓ would enter dock mode");
+		assert.equal(controller.inDock(), true);
+
+		// The task finishes on its own — no user keypress.
+		await reg.kill(task.id, "test");
+		await new Promise((resolve) => setTimeout(resolve, 50));
+
+		assert.equal(controller.inDock(), false, "dock mode must release when rows vanish");
+		assert.equal(controller.selected(), undefined);
+		// Widget is cleared, so no stale rows linger below the editor.
+		assert.equal(calls.at(-1)?.content, undefined);
+		dock.dispose();
+	} finally {
+		await reg.disposeAll();
+	}
+});
+
+test("installDock: selection index is clamped when one of several tasks finishes", async () => {
+	const reg = makeRegistry();
+	const { ctx } = fakeCtx();
+	try {
+		const controller = new DockController(() => reg.list().filter((t: BgTask) => t.status === "running"));
+		const dock = installDock(ctx as never, reg, controller);
+		await reg.run("sleep 20", "/tmp");
+		const second = await reg.run("sleep 21", "/tmp");
+		controller.enterDock();
+		controller.move(1);
+		assert.equal(controller.selectedIndex(), 1);
+
+		await reg.kill(second.id, "test");
+		await new Promise((resolve) => setTimeout(resolve, 50));
+
+		assert.equal(controller.inDock(), true, "another running row still exists");
+		assert.equal(controller.selectedIndex(), 0, "index clamped to the surviving row");
+		dock.dispose();
+	} finally {
+		await reg.disposeAll();
+	}
+});
+
 test("installDock: task spawns → widget renders row + rules", async () => {
 	const reg = makeRegistry();
 	const { ctx, calls } = fakeCtx();

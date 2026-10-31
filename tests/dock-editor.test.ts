@@ -43,6 +43,37 @@ function makeEditor(dock: ReturnType<typeof makeDock>) {
 	return editor;
 }
 
+test("typed key is not swallowed when dock rows vanished (auto-release, no Esc needed)", () => {
+	const dock = makeDock();
+	// Rows gone: the controller still thinks it is in dock mode but has no row.
+	dock.selected = () => undefined as never;
+	let forwarded: string | undefined;
+	const editor = makeEditor(dock);
+	// Capture what reaches the real editor.
+	editor.handleInput = DockEditor.prototype.handleInput.bind(editor);
+	Object.assign(editor, {
+		tui: { requestRender() {} },
+		getText: () => "",
+		dock,
+	});
+	const superSpy = Object.getPrototypeOf(DockEditor.prototype).handleInput as (d: string) => void;
+	void superSpy;
+	(editor as unknown as { __forwarded?: string }).__forwarded = undefined;
+	// Patch the CustomEditor prototype method via an own-property shim.
+	const proto = Object.getPrototypeOf(Object.getPrototypeOf(editor));
+	const original = proto.handleInput;
+	proto.handleInput = function patched(data: string) {
+		forwarded = data;
+	};
+	try {
+		editor.handleInput("x");
+	} finally {
+		proto.handleInput = original;
+	}
+	assert.equal(forwarded, "x", "the keystroke must reach the real editor");
+	assert.ok(dock.recorded.includes("exit"), "dock mode must be released");
+});
+
 test("kitty protocol down arrow (CSI 1;1:1B) moves the dock selection down", () => {
 	const dock = makeDock();
 	const editor = makeEditor(dock);

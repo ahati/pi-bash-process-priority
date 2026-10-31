@@ -72,6 +72,17 @@ export class DockEditor extends CustomEditor {
 		}
 		debugLog("dock-editor: dock-mode key", JSON.stringify(data));
 
+		// Defensive: if the rows vanished (task finished/timed out on its own)
+		// and no reconcile ran, do not trap the keyboard. Exit dock mode and
+		// let the keystroke through to the real editor.
+		if (!this.dock.selected()) {
+			debugLog("dock-editor: dock mode had no selectable row — auto-exiting");
+			this.dock.exitDock();
+			this.tui.requestRender();
+			if (data !== "\u001b") super.handleInput(data);
+			return;
+		}
+
 		// Dock mode owns the keyboard.
 		if (data === "\x03") {
 			// ctrl+c is the app safety valve — always reaches pi.
