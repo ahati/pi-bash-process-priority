@@ -389,7 +389,6 @@ Implementation notes: pure `format.ts` helpers produce the line strings (unit-te
 | `PI_BASH_NICE_LEVEL` | `10` | Foreground nice (existing, unchanged). |
 | `PI_BG_NICE_LEVEL` | `19` | Background nice (spawn + renice-on-adopt), clamped 1–19, must be ≥ fg level (else clamped up). |
 | `PI_BG_IONICE_CLASS` | `3` | Background IO class (`0` off, `2` best-effort, `3` idle). |
-| `PI_BG_TASKS_DISABLE` | unset | `1` disables the whole feature (override, tool, UI); PRD-001 hook behavior resumes. |
 | `PI_BG_TASK_LOG_DIR` | `<cwd>/.pi/bg-tasks` | Task log directory (created lazily, gitignore respected). |
 | `PI_BG_TASKS_MAX` | `100` | Finished tasks retained. |
 | `PI_BG_KILL_GRACE_MS` | `3000` | SIGTERM→SIGKILL grace. |

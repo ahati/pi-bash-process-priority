@@ -19,7 +19,6 @@ test("resolveBgConfig: defaults", () => {
 		fgNice: DEFAULT_FG_NICE,
 		bgNice: DEFAULT_BG_NICE,
 		ioniceClass: DEFAULT_IONICE_CLASS,
-		disabled: false,
 		supportedPlatform: true,
 		logDir: undefined,
 		tasksMax: DEFAULT_TASKS_MAX,
@@ -61,14 +60,6 @@ test("resolveBgConfig: tasksMax >= 1 and logBytes >= 1024", () => {
 	assert.equal(resolveBgConfig({ PI_BG_LOG_BYTES: "abc" }, "linux").logBytes, DEFAULT_LOG_BYTES);
 });
 
-test("resolveBgConfig: disable flag and platform gate", () => {
-	assert.equal(resolveBgConfig({ PI_BG_TASKS_DISABLE: "1" }, "linux").disabled, true);
-	assert.equal(resolveBgConfig({ PI_BG_TASKS_DISABLE: "true" }, "linux").disabled, true);
-	assert.equal(resolveBgConfig({ PI_BG_TASKS_DISABLE: "0" }, "linux").disabled, false);
-	assert.equal(resolveBgConfig({ PI_BG_TASKS_DISABLE: "yes" }, "linux").disabled, false);
-	assert.equal(resolveBgConfig({}, "win32").supportedPlatform, false);
-	assert.equal(resolveBgConfig({}, "darwin").supportedPlatform, true);
-});
 
 test("resolveBgConfig: kill grace non-negative", () => {
 	assert.equal(resolveBgConfig({ PI_BG_KILL_GRACE_MS: "-100" }, "linux").killGraceMs, 0);

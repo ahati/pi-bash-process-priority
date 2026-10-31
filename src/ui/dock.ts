@@ -80,7 +80,9 @@ export class DockController {
 	}
 
 	selectedIndex(): number {
-		return this.index;
+		// -1 when the dock is not focused: the render-cache signature must
+		// change on enter/exit so the `>` marker appears/disappears.
+		return this.active ? this.index : -1;
 	}
 
 	/** Drop out automatically when the registry drops to zero rows. */

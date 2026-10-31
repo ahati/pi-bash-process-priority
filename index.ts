@@ -16,8 +16,6 @@
  *   PI_BASH_NICE_LEVEL     fg nice increment, clamped to 1..19 (default 10)
  *   PI_BG_NICE_LEVEL       bg nice, clamped to fgNice..19 (default 19)
  *   PI_BG_IONICE_CLASS     bg IO class 0-3 (default 3 = idle; 0 = off)
- *   PI_BG_TASKS_DISABLE    set to "1" to disable PRD-003 entirely (PRD-001
- *                          tool_call rewrite resumes as the priority mechanism)
  *   PI_BG_TASK_LOG_DIR     task log dir (default <cwd>/.pi/bg-tasks)
  *   PI_BG_TASKS_MAX        finished tasks retained (default 100)
  *   PI_BG_KILL_GRACE_MS    SIGTERM→SIGKILL grace (default 3000)
@@ -143,10 +141,10 @@ export default function (pi: ExtensionAPI) {
 
 		const bg = resolveBgConfig(process.env, process.platform);
 		initDebugLog(resolveLogDir(bg, ctx.cwd));
-		debugLog("session_start", { mode: ctx.mode, hasUI: ctx.hasUI, cwd: ctx.cwd, bgNice: bg.bgNice, disabled: bg.disabled });
+		debugLog("session_start", { mode: ctx.mode, hasUI: ctx.hasUI, cwd: ctx.cwd, bgNice: bg.bgNice });
 
-		// PRD-003 disabled or unsupported platform → exact PRD-001 behavior.
-		if (bg.disabled || !bg.supportedPlatform) {
+		// Unsupported platform → exact PRD-001 behavior.
+		if (!bg.supportedPlatform) {
 			legacyConfig = resolveConfig(process.env, process.platform);
 			if (legacyConfig.disabled || !legacyConfig.supportedPlatform) return;
 			if (!(await probeNice(legacyConfig.level))) {

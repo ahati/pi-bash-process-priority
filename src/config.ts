@@ -31,7 +31,6 @@ function clamp(value: number, min: number, max: number): number {
 
 /** Parse and clamp the full background-task config from the environment. */
 export function resolveBgConfig(env: EnvLike, platform: NodeJS.Platform): BgConfig {
-	const disabled = env.PI_BG_TASKS_DISABLE === "1" || env.PI_BG_TASKS_DISABLE === "true";
 	const fgNice = clamp(parseIntEnv(env.PI_BASH_NICE_LEVEL, DEFAULT_FG_NICE), 1, 19);
 	// bg must be strictly lower priority than fg: clamp up to fgNice minimum.
 	const bgNice = clamp(parseIntEnv(env.PI_BG_NICE_LEVEL, DEFAULT_BG_NICE), fgNice, 19);
@@ -40,7 +39,6 @@ export function resolveBgConfig(env: EnvLike, platform: NodeJS.Platform): BgConf
 		fgNice,
 		bgNice,
 		ioniceClass,
-		disabled,
 		supportedPlatform: platform !== "win32",
 		logDir: env.PI_BG_TASK_LOG_DIR?.trim() || undefined,
 		tasksMax: Math.max(1, parseIntEnv(env.PI_BG_TASKS_MAX, DEFAULT_TASKS_MAX)),

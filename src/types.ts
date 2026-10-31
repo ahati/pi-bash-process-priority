@@ -186,8 +186,6 @@ export interface BgConfig {
 	bgNice: number;
 	/** Background IO class (PI_BG_IONICE_CLASS, default 3; 0 = off). */
 	ioniceClass: number;
-	/** PI_BG_TASKS_DISABLE=1 disables the whole feature. */
-	disabled: boolean;
 	/** Platform gate: win32 without WSL is inert (PRD-002). */
 	supportedPlatform: boolean;
 	logDir: string | undefined; // undefined → default <cwd>/.pi/bg-tasks

@@ -150,9 +150,9 @@ pi.on("user_bash", () => ({ operations: sharedOperations }));
 | FR-3 | `timeout` values are clamped per mode (fg ≤ `PI_BASH_FG_TIMEOUT_MAX`, bg ≤ `PI_BASH_TIMEOUT_BG_MAX`); a background timeout kills the task with `reason: timeout (<n>s)`. |
 | FR-4 | There is no `bg_task` tool: `taskAction` on `bash` implements list / status / kill / input / adopt with the PRD-003 wordings; when set it takes precedence over execution parameters. |
 | FR-5 | Every registry transition appends exactly one `bg-task-state` entry per §6; append failures are logged once and never block the registry. |
-| FR-6 | The bash execution hook's entire body is the §7 return; with PRD-003 disabled it returns `undefined`. No other hook statements (G4) — verified by test. |
+| FR-6 | The bash execution hook's entire body is the §7 return; the hook body returns the shared operations whenever the extension is active (G4). |
 | FR-7 | `renderCall` distinguishes background calls; the expanded (`ctrl+o`) view shows the resolved `cwd`; `taskAction` calls render as management lines; dock/`/tasks` render parameter-started tasks identically to adopted ones (origin preserved in `details`). |
-| FR-8 | All new paths no-op under `PI_BG_TASKS_DISABLE=1`. |
+
 | FR-9 | A leading `cd <current-directory> &&` (exact match after unquoting and trailing-slash normalization) is stripped from `command` before execution; all other commands pass through untouched. |
 
 ## 10. Security considerations
@@ -163,7 +163,7 @@ pi.on("user_bash", () => ({ operations: sharedOperations }));
 
 ## 11. Testing and validation
 
-1. **Unit** — schema (defaults, `background`+`timeout` rejection), spawn→task notice wording, `run`-removal from `bg_task`, event emission per transition, hook body shape (returns operations; `undefined` when disabled).
+1. **Unit** — schema (defaults, `background`+`timeout` rejection), spawn→task notice wording, `run`-removal from `bg_task`, event emission per transition, hook body shape (returns the shared operations).
 2. **Integration (real sessions)**
    - TUI: `bash { sleep 60, background: true }` → immediate task notice, dock row, bg nice + ionice on the same PID, completion wake; foreground path byte-identical to stock (PRD-003 harness).
    - RPC: `steer` adopt phrase → `kind: "adopted"` event + reniced PID; `entry_appended` stream shows `spawned → adopted → terminal`; `get_entries` poll lists tasks.
