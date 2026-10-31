@@ -255,6 +255,8 @@ interface BgTask {
 
 ### 7.5 Model-facing tools
 
+> **Amended by [PRD-004](PRD-004-rpc-task-surface.md) v3:** background execution is a **parameter of the masked `bash` tool** (`background?: boolean`, `taskName?: string`) — not the `run` action below. `bg_task` is management-only (`list | status | kill | input | adopt`). The text below reflects PRD-003 v1.0 and is kept for history; PRD-004 §4 is authoritative for the tool surface.
+
 **`bg_task`** — one tool, action-parameterized (agy's `run_command` + `manage_task` collapsed into pi's naming):
 
 ```ts
