@@ -8,8 +8,8 @@
 | **Owner** | pi-bash-process-priority maintainers |
 | **Depends on** | [PRD-003](background-task-design-and-ui.md) (background tasks: registry, bash override, ctrl+b adoption) |
 | **Verified against** | pi `@earendil-works/pi-coding-agent` **1.4.0** (`dist/modes/rpc/rpc-mode.js`, `dist/core/agent-session.js`, `docs/rpc*.md`) |
-| **Naming note** | The client-visible surface is the **`bash` RPC method** (the Bash execution path). pi's internal extension hook that makes it possible is named `user_bash`; that name is an implementation detail and never appears in the client-facing protocol. |
-| **Design principle** | **One Bash implementation.** All execution logic — spawn, priority wrapping, foreground slots, adoption eligibility, logs — lives in the PRD-003 bash-override module, whose `BashOperations` back the masked built-in tool. The `user_bash` handler is a **transport adapter only** (~10 lines): it routes the RPC path into that same operations object and answers `__bg__` control verbs from the registry. It contains no execution logic of its own. |
+| **Naming note** | The client-visible surface is the **`bash` RPC method** — the Bash execution path and its hook are collectively called **bash** in this document. (pi's internal event object happens to be named `user_bash`; that spelling is an implementation detail and is not used here.) |
+| **Design principle** | **One Bash implementation.** All execution logic — spawn, priority wrapping, foreground slots, adoption eligibility, logs — lives in the PRD-003 bash-override module, whose `BashOperations` back the masked built-in tool. The bash hook handler is a **transport adapter only** (~10 lines): it routes the RPC path into that same operations object and answers `__bg__` control verbs from the registry. It contains no execution logic of its own. |
 | **Out of scope here** | Custom RPC methods (pi 1.4 has no extension API for them), keypress injection (does not exist over RPC), backgrounding RPC-initiated bash (§8 Limitation L1) |
 
 ---
@@ -45,7 +45,7 @@ Desired outcome: an RPC client can `inspect → adopt → kill → feed → watc
 | G4 | Plain RPC `bash` executions run at the **foreground nice level** (bypass fix), preserving pi's streaming (`bash_execution_update`) and `abort_bash` semantics byte-for-byte. |
 | G5 | `/tasks` and the dock remain the **TUI** surfaces; nothing in this PRD changes TUI behavior. |
 | G6 | Fail-open: every new path degrades to current behavior on any error (probe absence, registry unavailable, malformed sentinel arguments). |
-| G7 | **Single Bash implementation**: the `user_bash` handler is a transport adapter (route + control-verb dispatch only); all execution behavior is owned by the PRD-003 override module, so the masked built-in tool and the RPC path share one executor, one priority policy, one foreground-slot ledger. |
+| G7 | **Single Bash implementation**: the bash hook handler is a transport adapter (route + control-verb dispatch only); all execution behavior is owned by the PRD-003 override module, so the masked built-in tool and the RPC path share one executor, one priority policy, one foreground-slot ledger. |
 
 ### Non-goals
 
@@ -56,11 +56,11 @@ Desired outcome: an RPC client can `inspect → adopt → kill → feed → watc
 
 ## 4. Verified pi 1.4 mechanisms
 
-**Path boundary (why a transport adapter is required):** the RPC `bash` method does **not** invoke the registered (masked) bash tool. `rpc-mode.js:439-458` calls `AgentSession.executeBash` (`agent-session.js:3158`), which executes via `executeBashWithOperations` with pi's own `createLocalBashOperations` — no tool lookup, no `tool_call` hooks. Masking the built-in tool therefore cannot reach the RPC path by itself. The **only** extension seam on that path is the `user_bash` event, whose powers are exactly: return `{ result }` (answer without spawning) or return `{ operations }` (substitute the executor). PRD-004 uses it exclusively as a router into the override's operations — never as a second implementation.
+**Path boundary (why a transport adapter is required):** the RPC `bash` method does **not** invoke the registered (masked) bash tool. `rpc-mode.js:439-458` calls `AgentSession.executeBash` (`agent-session.js:3158`), which executes via `executeBashWithOperations` with pi's own `createLocalBashOperations` — no tool lookup, no `tool_call` hooks. Masking the built-in tool therefore cannot reach the RPC path by itself. The **only** extension seam on that path is the bash execution hook, whose powers are exactly: return `{ result }` (answer without spawning) or return `{ operations }` (substitute the executor). PRD-004 uses it exclusively as a router into the override's operations — never as a second implementation.
 
 | Mechanism | Evidence | Role |
 | --- | --- | --- |
-| `user_bash` hook fires for **RPC `bash`** (and interactive `!`) | `rpc-mode.js:440-445` calls `emitUserBash`; `interactive-mode.js:5833` for `!` | The single interception point for the Bash execution path. |
+| Bash execution hook fires for **RPC `bash`** (and interactive `!`) | `rpc-mode.js:440-445` calls `emitUserBash`; `interactive-mode.js:5833` for `!` | The single interception point for the Bash execution path. |
 | Returning `{ result }` short-circuits execution | `rpc-mode.js:446-452` — skips `executeBash` entirely | Sentinel responses: our JSON becomes the bash result; nothing spawns. |
 | Returning `{ operations }` replaces the executor | same site → `executeBash(command, cwd, { operations })` (`agent-session.js:3158`) | **Transport adapter**: routes the RPC path into the override's `BashOperations` — the same executor behind the masked tool (G7). No hook-side execution logic. |
 | `pi.appendEntry()` → `entry_appended` event; excluded from model context | `docs/json.md:122`; state docs ("durable data excluded from model context") | The event channel for task-state transitions. |
@@ -132,7 +132,7 @@ For every non-sentinel `bash` hook invocation the transport adapter returns `{ o
 
 | ID | Requirement |
 | --- | --- |
-| FR-1 | The `user_bash` handler returns `{ result }` for `__bg__ ` commands per §5 and `undefined` for everything else (R1). |
+| FR-1 | The bash hook handler returns `{ result }` for `__bg__ ` commands per §5 and `undefined` for everything else (R1). |
 | FR-2 | Responses are single-line-terminated JSON objects matching §5; `exitCode` 0/1 per success/error (R2, R3). |
 | FR-3 | `adopt` delegates to the same registry adoption as `ctrl+b` (§7.2 of PRD-003): no restart, no kill, renice+ionice on adoption, dock/notification/UI updates fire identically. |
 | FR-4 | Every registry transition appends exactly one `bg-task-state` entry (§6); failures to append are logged once and never block the registry. |
