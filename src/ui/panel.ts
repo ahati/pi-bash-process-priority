@@ -275,6 +275,7 @@ class TasksPanel implements Component {
 		const task = this.detailTask ?? this.registry.list()[0];
 		if (!task) return [this.theme.fg("dim", "No background tasks."), "", this.theme.fg("dim", LIST_HINT)];
 		const lines: string[] = detailLines(task, width);
+		lines.push(""); // blank line between "Output" and the content (§4.2)
 		const height = Math.max(1, 10);
 		const maxScroll = Math.max(0, this.output.length - height);
 		if (this.follow) this.scroll = maxScroll;
