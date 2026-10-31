@@ -12,7 +12,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { createTaskManager, type TaskManagerApi } from "../src/registry.ts";
+import { createTaskManager } from "../src/registry.ts";
+import type { BgTask, TaskManagerApi } from "../src/types.ts";
 import { DockController, DOCK_WIDGET_KEY, installDock } from "../src/ui/dock.ts";
 import { DockEditor } from "../src/dock-editor.ts";
 import { CustomEditor } from "@earendil-works/pi-coding-agent";
@@ -55,10 +56,10 @@ function fakeSetWidgetCtx() {
 
 test("E2E-TUI: ↓ enters dock mode and renders the > selection marker", async () => {
 	const reg = makeRegistry();
-	const tasks = reg.list().filter((t) => t.status === "running");
+	const tasks = reg.list().filter((t: BgTask) => t.status === "running");
 	assert.equal(tasks.length, 0, "start clean");
 
-	const controller = new DockController(() => reg.list().filter((t) => t.status === "running"));
+	const controller = new DockController(() => reg.list().filter((t: BgTask) => t.status === "running"));
 	const { ctx, widgetState } = fakeSetWidgetCtx();
 	const dock = installDock(ctx as never, reg, controller);
 
@@ -100,7 +101,7 @@ test("E2E-TUI: ↓ enters dock mode and renders the > selection marker", async (
 
 test("E2E-TUI: esc returns to input mode", async () => {
 	const reg = makeRegistry();
-	const controller = new DockController(() => reg.list().filter((t) => t.status === "running"));
+	const controller = new DockController(() => reg.list().filter((t: BgTask) => t.status === "running"));
 	const { ctx, widgetState } = fakeSetWidgetCtx();
 	const dock = installDock(ctx as never, reg, controller);
 	await reg.run("sleep 30", "/tmp");
@@ -129,7 +130,7 @@ test("E2E-TUI: esc returns to input mode", async () => {
 
 test("E2E-TUI: enter on selected row triggers onOpenTask", async () => {
 	const reg = makeRegistry();
-	const controller = new DockController(() => reg.list().filter((t) => t.status === "running"));
+	const controller = new DockController(() => reg.list().filter((t: BgTask) => t.status === "running"));
 	const { ctx, widgetState } = fakeSetWidgetCtx();
 	const dock = installDock(ctx as never, reg, controller);
 	await reg.run("sleep 30", "/tmp");
