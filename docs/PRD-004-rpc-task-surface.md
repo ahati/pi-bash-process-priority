@@ -93,7 +93,7 @@ Configuration:
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `PI_BASH_FG_TIMEOUT_MAX` | `60` | Foreground timeout ceiling (seconds); model values are clamped. |
-| `PI_BG_ADOPT_KEY` | `ctrl+b` | Adoption hotkey. Shadowing note: `ctrl+b` is also pi's built-in `tui.editor.cursorLeft` secondary binding — pi warns at startup and resolves in our favor; arrows/`alt+b` still work. Remedy: set this env, or free the binding via `{ "tui.editor.cursorLeft": "left" }` in `keybindings.json`. |
+| `PI_BG_ADOPT_KEY` | `ctrl+h` | Adoption hotkey. `ctrl+h` is unbound in pi's defaults; `ctrl+b` (agy-style) remains available via this env but shadows `tui.editor.cursorLeft` — pi reports that as a startup warning and resolves in our favor. Remedy without changing the key: `{ "tui.editor.cursorLeft": "left" }` in `keybindings.json`. |
 | `PI_BASH_TIMEOUT_BG_MAX` | `300` | Background timeout ceiling (seconds); enforced by a registry kill. |
 
 ## 5. `adopt` — the control verb

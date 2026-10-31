@@ -265,16 +265,15 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
-		// Adoption hotkey (§7.2). Default ctrl+b — note this shadows the
-		// built-in tui.editor.cursorLeft emacs binding (pi warns at startup and
-		// resolves the conflict in our favor; arrow keys/alt+b still move the
-		// cursor). Users who prefer cursor-left can set PI_BG_ADOPT_KEY or add
-		// { "tui.editor.cursorLeft": "left" } to keybindings.json.
-		const adoptKeyRaw = (process.env.PI_BG_ADOPT_KEY || "ctrl+b").toLowerCase().trim();
+		// Adoption hotkey (§7.2). Default ctrl+h — the only ctrl-letter not
+		// bound by pi's defaults (ctrl+b is tui.editor.cursorLeft; ctrl+t is
+		// app.thinking.toggle; ctrl+y is yank). Opt back into ctrl+b with
+		// PI_BG_ADOPT_KEY=ctrl+b if you accept shadowing cursor-left.
+		const adoptKeyRaw = (process.env.PI_BG_ADOPT_KEY || "ctrl+h").toLowerCase().trim();
 		// Light guard: accept modifier+key strings pi's KeyId union understands.
 		const adoptKey = /^(ctrl\+|alt\+|shift\+|super\+)*([a-z0-9]|f[1-9]|f1[0-2]|[=[\\\;'/.,`\-])$/.test(adoptKeyRaw)
 			? adoptKeyRaw
-			: "ctrl+b";
+			: "ctrl+h";
 		pi.registerShortcut(adoptKey as KeyId, {
 			description: "Move the running foreground bash command to a background task",
 			handler: () => {
