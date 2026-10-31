@@ -30,17 +30,23 @@ export class DockEditor extends CustomEditor {
 		this.dock = dock;
 	}
 
-	// Arrow keys arrive in two encodings depending on the terminal's cursor-key
-	// mode: CSI (`[B`) and SS3 (`OB`). matchesKey covers the configured
-	// bindings; these raw forms are belt-and-braces for every terminal.
+	/** Classify an arrow key across legacy CSI, SS3, and Kitty-protocol encodings. */
+		private static kittyArrow(data: string): "up" | "down" | "left" | "right" | undefined {
+		// ESC [ <mods> <letter>  (CSI / Kitty)  or  ESC O <letter>  (SS3)
+		const match = new RegExp("^\\u001b(?:O([ABCD])|\\[[0-9;:]*([ABCD]))$").exec(data);
+		if (!match) return undefined;
+		const letter = match[1] ?? match[2];
+		return letter === "A" ? "up" : letter === "B" ? "down" : letter === "C" ? "right" : "left";
+	}
+
 	private static readonly DOWN_SEQUENCES = ["[B", "OB"];
 	private static readonly UP_SEQUENCES = ["[A", "OA"];
 
 	private isDown(data: string): boolean {
-		return matchesKey(data, Key.down) || DockEditor.DOWN_SEQUENCES.includes(data);
+		return matchesKey(data, Key.down) || DockEditor.DOWN_SEQUENCES.includes(data) || DockEditor.kittyArrow(data) === "down";
 	}
 	private isUp(data: string): boolean {
-		return matchesKey(data, Key.up) || DockEditor.UP_SEQUENCES.includes(data);
+		return matchesKey(data, Key.up) || DockEditor.UP_SEQUENCES.includes(data) || DockEditor.kittyArrow(data) === "up";
 	}
 
 	handleInput(data: string): void {
@@ -82,14 +88,16 @@ export class DockEditor extends CustomEditor {
 			this.tui.requestRender();
 			return;
 		}
-		if (matchesKey(data, Key.enter)) {
+		const isEnter = matchesKey(data, Key.enter) || data === "\r" || /^\u001b\[1?3(;[0-9:]+)?u$/.test(data);
+		if (isEnter) {
 			const task = this.dock.selected();
 			if (task) this.onOpenTask?.(task);
 			else this.dock.exitDock();
 			this.tui.requestRender();
 			return;
 		}
-		if (matchesKey(data, Key.escape)) {
+		const isEscape = matchesKey(data, Key.escape) || data === "\u001b" || /^\u001b\[1?27(;[0-9:]+)?u$/.test(data);
+		if (isEscape) {
 			this.dock.exitDock();
 			this.tui.requestRender();
 			return;
