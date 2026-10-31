@@ -424,6 +424,18 @@ export function createBackgroundAwareBashTool(cwd: string, deps: BashOverrideDep
 		cwd: Type.Optional(
 			Type.String({ description: "Optional working directory. Defaults to the current execution directory." }),
 		),
+		intent: Type.Optional(
+			Type.String({
+				description:
+					"Optional short intent shown as the call header by compatible renderers (e.g. pi-ui-enhancement), e.g. 'check which files are dirty'.",
+			}),
+		),
+		tool: Type.Optional(
+			Type.String({
+				description:
+					"Optional header label shown by compatible renderers (e.g. pi-ui-enhancement), e.g. 'git status'.",
+			}),
+		),
 		taskAction: Type.Optional(
 			Type.Union(
 				[

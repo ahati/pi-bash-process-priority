@@ -3,7 +3,7 @@
 | | |
 | --- | --- |
 | **Status** | Draft — ready for review |
-| **Version** | 3.1 (3.0 + management folded into the `bash` tool; timeout caps; `cwd` param) |
+| **Version** | 3.2 (3.1 + `intent`/`tool` display args; pi-ui-enhancement renderer contract) |
 | **Date** | 2026-10-31 |
 | **Owner** | pi-bash-process-priority maintainers |
 | **Depends on** | [PRD-003](background-task-design-and-ui.md) (registry, bash override, ctrl+b adoption; §7.5 amended by this PRD) |
@@ -64,11 +64,15 @@ Constraints (verified, pi 1.4.0): RPC `bash` never passes through the registered
   background?: boolean       // default false — run as task-N at bg priority
   taskName?: string          // optional label for the task
   cwd?: string               // optional working directory (default: pi's execution dir)
+  intent?: string            // display-only: call-header intent (renderer contract)
+  tool?: string              // display-only: call-header label (renderer contract)
   taskAction?: "list" | "status" | "kill" | "input" | "adopt"
   taskId?: string            // required for status/kill/input
   input?: string             // required for input
 }
 ```
+
+**Renderer contract (pi-ui-enhancement ≥ 2026.10.24-r5):** `intent`/`tool` render as the call header (`🔧 <tool> · <intent>`), `background`/`taskName` render a `⏾ background · <taskName>` badge, `cwd` renders a `cwd: <path>` line in the expanded (`ctrl+o`) view, and `taskAction` calls render a `bash tasks · <action> [taskId]` header. These args are display metadata: they never alter execution. Without pi-ui-enhancement the builtin fallback rendering is used (args ignored).
 
 - **Foreground** (`background` unset/false): unchanged pipeline — fg nice at spawn, streaming, abort kill-tree, timeout clamped to `fgTimeoutMax`, truncation (PRD-003 §7.1 guarantees).
 - **Background** (`background: true`): registry spawn at bg priority; `timeout` clamped to `bgTimeoutMax` and enforced by the registry (kill with `reason: timeout (<n>s)`); response is the standard task notice:
