@@ -154,7 +154,8 @@ export async function runTaskAction(
 		return { text: `${taskLine(task)}\n\n${log}`, details: task };
 	}
 	if (taskAction === "kill") {
-		return { text: await registry.kill(task.id), details: task };
+		await registry.kill(task.id);
+		return { text: `Killed ${task.id} (${task.command})`, details: task };
 	}
 	// taskAction === "input"
 	if (params.input === undefined) {
