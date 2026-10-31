@@ -327,7 +327,10 @@ export default function (pi: ExtensionAPI) {
 			const prevEditor = ctx.ui.getEditorComponent();
 			if (!prevEditor) {
 				ctx.ui.setEditorComponent((tui, theme, keybindings) => {
-					const editor = new DockEditor(tui, theme, keybindings, controller);
+					// embedWorkingStatus keeps pi's "⎇ Working" indicator inside the
+					// editor's top border (native behavior); without it pi renders it
+					// as a separate line above the input.
+					const editor = new DockEditor(tui, theme, keybindings, controller, { embedWorkingStatus: true });
 					editor.onOpenTask = (task: BgTask) => {
 						void openTasksPanel(ctxRef as ExtensionContext, registry as TaskManagerApi, keybindings);
 						void task;
