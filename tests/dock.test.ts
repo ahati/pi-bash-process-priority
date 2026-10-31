@@ -114,7 +114,7 @@ test("installDock: widget hidden while no tasks are running", async () => {
 	}
 });
 
-test("installDock: task spawns → widget renders row + count line + rules", async () => {
+test("installDock: task spawns → widget renders row + rules", async () => {
 	const reg = makeRegistry();
 	const { ctx, calls } = fakeCtx();
 	try {
@@ -127,8 +127,8 @@ test("installDock: task spawns → widget renders row + count line + rules", asy
 		const text = rendered.join("\n");
 		const first = rendered[0];
 		assert.match(first, /● \[\d\d:\d\d:\d\d\] sleep 2 running/); // no top rule — rows come first
-		assert.match(rendered.at(-2) ?? "", /─/); // bottom rule (second-to-last line)
-		assert.match(rendered.at(-1) ?? "", /1 task\(s\) · \/tasks/);
+		assert.match(rendered.at(-1) ?? "", /─/); // bottom rule (last line)
+		
 		dock.dispose();
 	} finally {
 		await reg.disposeAll();
@@ -155,7 +155,7 @@ test("installDock: bottom rule uses the injected border color; no top rule", asy
 	}
 });
 
-test("installDock: rows clamp to 7 and the count line reports all running tasks", async () => {
+test("installDock: rows clamp to 7", async () => {
 	const reg = makeRegistry({ logDir: "/tmp/bg-dock-clamp", killGraceMs: 100, logBytes: 4096, maxFinished: 20 });
 	const { ctx, calls } = fakeCtx();
 	try {
@@ -167,7 +167,6 @@ test("installDock: rows clamp to 7 and the count line reports all running tasks"
 		assert.ok(rendered);
 		const rowLines = rendered.filter((line: string) => line.includes("● ["));
 		assert.equal(rowLines.length <= 7, true, `expected \u22647 rows, got ${rowLines.length}`);
-		assert.match(rendered.join("\n"), /9 task\(s\) · \/tasks/);
 		dock.dispose();
 	} finally {
 		await reg.disposeAll();

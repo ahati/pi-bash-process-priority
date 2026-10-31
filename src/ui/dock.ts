@@ -106,7 +106,6 @@ export function installDock(
 
 		const ruleText = (options.borderColor ?? ((t: string) => t))(RULE_CHAR.repeat(w));
 		lines.push(ruleText);
-		lines.push(`\u001b[2m${all.length} task(s) \u00b7 /tasks\u001b[0m`);
 
 		ctx.ui.setWidget(DOCK_WIDGET_KEY, lines, { placement: "belowEditor" });
 	}
