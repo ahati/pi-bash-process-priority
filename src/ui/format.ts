@@ -116,12 +116,16 @@ function terminalSuffix(task: BgTask): string {
  * The command is truncated to leave room for the status tail (width-24), then
  * the whole line passes through `truncateToWidth` (§7.8).
  */
-export function dockRow(task: BgTask, selected: boolean, width: number): string {
+export function dockRow(task: BgTask, selected: boolean, width: number, nowMs?: number): string {
 	const lead = selected ? "> " : "  ";
 	const prefix = `${lead}${BULLET} [${formatClock(task.startedAt)}] `;
 	const commandWidth = Math.max(1, width - 24);
 	const command = truncateToWidth(singleLine(task.command), commandWidth);
-	const line = `${prefix}${command} ${statusWord(task.status)}${terminalSuffix(task)}`;
+	// Live elapsed time for running tasks (PRD-004 §4.1): the 1 s dock ticker
+	// supplies nowMs so the duration ticks up on screen.
+	const elapsed =
+		task.status === "running" && nowMs !== undefined ? ` · ${formatDuration(Math.max(0, nowMs - task.startedAt))}` : "";
+	const line = `${prefix}${command} ${statusWord(task.status)}${terminalSuffix(task)}${elapsed}`;
 	return truncateToWidth(line, width);
 }
 

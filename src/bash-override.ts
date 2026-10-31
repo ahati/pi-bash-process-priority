@@ -182,6 +182,32 @@ export function formatBackgroundToolResult(task: BgTask): string {
  * numeric strings coerce to numbers; an unrecognized taskAction is dropped
  * (the call then executes as a normal foreground command).
  */
+/**
+ * Immediate timeout validation (PRD-004 §4.1): a timeout above the mode's cap
+ * is REJECTED with an actionable error — never silently clamped (a silent
+ * clamp makes the model believe it has 999s when it has 60s).
+ */
+export function validateTimeout(
+	timeout: number | undefined,
+	background: boolean,
+	caps: { fg: number; bg: number },
+): string | undefined {
+	if (timeout === undefined) return undefined;
+	const cap = background ? caps.bg : caps.fg;
+	const label = background ? "background" : "foreground";
+	if (timeout > cap) {
+		return (
+			background
+				? `Timeout ${timeout}s exceeds the background cap of ${cap}s (PI_BASH_TIMEOUT_BG_MAX).`
+				: `Timeout ${timeout}s exceeds the foreground cap of ${cap}s (PI_BASH_FG_TIMEOUT_MAX). For long-running work, set background=true (background cap: ${caps.bg}s) instead.`
+		);
+	}
+	if (timeout < 1) {
+		return `Timeout must be at least 1 second.`;
+	}
+	return undefined;
+}
+
 export interface NormalizedBashArgs {
 	command?: string;
 	timeout?: number;
@@ -490,7 +516,7 @@ export function createBackgroundAwareBashTool(cwd: string, deps: BashOverrideDep
 		),
 		timeout: Type.Optional(
 			Type.Number({
-				description: `Optional. Max seconds to run. Foreground commands are clamped to ${fgCap}s; background tasks to ${bgCap}s.`,
+				description: `Optional. Max seconds to run. Foreground commands may run at most ${fgCap}s and background tasks at most ${bgCap}s — larger values are rejected.`,
 			}),
 		),
 		background: Type.Optional(
@@ -540,14 +566,57 @@ export function createBackgroundAwareBashTool(cwd: string, deps: BashOverrideDep
 	});
 	type BashParams = Static<typeof bashParams>;
 
-	const amendedDescription = [
-		builtin.description,
-		"",
-		"Execution modes:",
-		`- Foreground (default): output streams back; a command may run at most ${fgCap}s (larger timeout values are clamped).`,
-		`- background=true: the command runs as a background task (task-N) at low priority and the call returns immediately; background tasks may run at most ${bgCap}s. Use taskName to label the task. Do not poll — you will be notified when it finishes.`,
-		"- cwd: optional working directory (defaults to the current execution directory); a leading `cd <current-directory> &&` is dropped automatically.",
-	].join("\n");
+	// Fully overridden description (PRD-004 §4.1): documents every parameter,
+	// both execution modes, the timeout caps and rejection semantics, priority,
+	// and management verbs. The model should never have to guess a limit.
+	const amendedDescription = `Execute a shell command in the session's workspace.
+
+## Execution modes
+
+**Foreground (default).** Output streams back while the command runs; the
+result contains stdout+stderr (truncated when large) and the exit code.
+Foreground commands may run at most ${fgCap}s (PI_BASH_FG_TIMEOUT_MAX); a
+timeout above that cap is rejected immediately.
+
+**Background (background=true).** The command starts immediately as a
+background task at low CPU/IO priority and the call returns at once with a
+task id (task-N) and a log path. Background tasks may run at most
+${bgCap}s (PI_BASH_TIMEOUT_BG_MAX); a timeout above that cap is rejected.
+Label the task with taskName.
+
+## Parameters
+
+- command: the exact command line. A leading \`cd <current-directory> &&\`
+  (or \`cd .\` / \`cd $PWD\`) is redundant — the tool already runs in the
+  current directory — and is dropped automatically. A \`cd\` to a DIFFERENT
+  directory is meaningful and is preserved.
+- cwd: optional working directory for this command; defaults to the current
+  execution directory.
+- timeout: optional, in seconds. Foreground cap ${fgCap}s, background cap
+  ${bgCap}s; supplying more is rejected immediately with the cap named.
+- background: set true for dev servers, watchers, long test suites, or any
+  command that outlives a single turn.
+- taskName: short human-readable label for a background task (shown in the
+  task list and notifications).
+
+## Background tasks — rules
+
+1. After starting a background task, either continue other work or end your
+   turn. The system notifies you when the task finishes — NEVER poll, and
+   never use sleep to wait for a task.
+2. Manage tasks with taskAction: "list" (all tasks, running first), "status"
+   (state + recent output), "kill" (terminate), "input" (write to a task's
+   stdin), "adopt" (move the currently running foreground command to the
+   background). When taskAction is set, all execution parameters are ignored.
+3. If the user asks to move a running foreground command to the background,
+   use taskAction "adopt".
+
+## Priority
+
+Foreground commands run at reduced CPU priority (nice, configurable) so the
+user's machine stays responsive; background tasks run at an even lower
+priority and idle IO class. An optional \`intent\` and \`tool\` label describe
+the call for compatible UI renderers.`;
 
 	const ourExecute = async (
 		toolCallId: string,
@@ -556,6 +625,19 @@ export function createBackgroundAwareBashTool(cwd: string, deps: BashOverrideDep
 		onUpdate: Parameters<typeof builtin.execute>[3],
 		ctx: Parameters<typeof builtin.execute>[4],
 	): Promise<unknown> => {
+		// ---- timeout validation (reject, never clamp) --------------------
+		const timeoutProblem = validateTimeout(
+			params.timeout,
+			params.background === true,
+			{ fg: fgCap, bg: bgCap },
+		);
+		if (timeoutProblem) {
+			return {
+				content: [{ type: "text", text: timeoutProblem }],
+				isError: true,
+			};
+		}
+
 		// ---- management branch (PRD-004 §4.1 taskAction) ----------------
 		if (params.taskAction) {
 			const outcome = await runTaskAction(deps.registry, {
@@ -582,8 +664,7 @@ export function createBackgroundAwareBashTool(cwd: string, deps: BashOverrideDep
 
 		// ---- background branch (PRD-004 §4.1) ---------------------------
 		if (params.background) {
-			const timeoutSeconds =
-				params.timeout === undefined ? undefined : Math.min(Math.max(1, params.timeout), bgCap);
+			const timeoutSeconds = params.timeout;
 			const task = await deps.registry.run(command, effectiveCwd, {
 				name: params.taskName,
 				timeoutSeconds,
@@ -595,8 +676,8 @@ export function createBackgroundAwareBashTool(cwd: string, deps: BashOverrideDep
 			};
 		}
 
-		// ---- foreground branch: clamped timeout, cwd override, race ------
-		const clampedTimeout = params.timeout === undefined ? undefined : Math.min(Math.max(1, params.timeout), fgCap);
+		// ---- foreground branch: validated timeout, cwd override, race ----
+		const clampedTimeout = params.timeout;
 		if (effectiveCwd !== cwd) cwdOverrides.set(toolCallId, effectiveCwd);
 
 		let resolveBg!: (task: BgTask) => void;

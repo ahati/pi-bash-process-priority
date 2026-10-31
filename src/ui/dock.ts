@@ -203,7 +203,10 @@ export function installDock(
 				// registry order already, so clamping drops the oldest.
 				const rows = all.slice(0, 7);
 				const selectedIndex = controller.inDock() ? controller.selectedIndex() : -1;
-				const lines = rows.map((task, i) => colorBullet(dockRow(task, i === selectedIndex, width), task.status, theme));
+				const now = Date.now();
+				const lines = rows.map((task, i) =>
+					colorBullet(dockRow(task, i === selectedIndex, width, now), task.status, theme),
+				);
 				// No top rule (the editor frame already separates); the bottom rule
 				// matches the editor border color so the block reads as one frame.
 				const rule = borderColor ? borderColor(RULE_CHAR.repeat(width)) : theme.fg("dim", RULE_CHAR.repeat(width));
