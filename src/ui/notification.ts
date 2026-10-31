@@ -1,14 +1,17 @@
 /**
  * Transcript renderer for `bg-task-notification` custom messages (PRD-003
- * §7.10). Registered via pi.registerMessageRenderer; renders from the
- * structured `details` payload only — `content` (the model-facing XML) is
- * never parsed here. Returning undefined falls back to pi's default raw
- * rendering, which is the graceful-degradation path for missing details.
+ * §7.10 / PRD-004 v3.1). Registered via pi.registerMessageRenderer; prefers
+ * the structured `details` payload and falls back to parsing the XML
+ * `content` when details were lost in transport (e.g. through the agent
+ * followUp queue). Field-test finding: wakes were delivered as injected
+ * turns but the styled notice never rendered (0/6) — this fallback makes
+ * the rendered line deterministic. Only returns undefined when the message
+ * is not ours to render at all.
  */
 
 import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
-import type { BgNotificationDetails } from "../types.ts";
+import type { BgNotificationDetails, BgTask, BgTaskStatus } from "../types.ts";
 import {
 	notificationCollapsedLine,
 	notificationExpandedLines,
@@ -23,28 +26,80 @@ function withBullet(line: string, colorToken: string, theme: Theme): string {
 	return theme.fg(colorToken as ThemeColor, bullet) + rest;
 }
 
+interface ParsedNotice {
+	taskId: string;
+	taskName: string;
+	status: BgTaskStatus;
+	exitCode?: number;
+	signal?: string;
+	reason?: string;
+}
+
+/** Minimal extractor for our own §7.6 XML — tolerant of missing fields. */
+export function parseNotificationXml(content: string): ParsedNotice | undefined {
+	if (!content.includes("background-task-notification")) return undefined;
+	const tag = (name: string): string | undefined => {
+		const m = new RegExp(`<${name}>([\\s\\S]*?)</${name}>`).exec(content);
+		return m?.[1]?.trim();
+	};
+	const taskId = tag("task-id");
+	if (!taskId) return undefined;
+	const status = (tag("status") ?? "completed") as BgTaskStatus;
+	const exitCodeRaw = tag("exit-code");
+	return {
+		taskId,
+		taskName: tag("task-name") ?? taskId,
+		status,
+		exitCode: exitCodeRaw !== undefined && exitCodeRaw !== "" ? Number(exitCodeRaw) : undefined,
+		signal: tag("signal"),
+		reason: tag("reason"),
+	};
+}
+
+/** Collapse a details payload (or XML fallback) into the styled line. */
+export function noticeLineFromDetails(
+	details: BgNotificationDetails | undefined,
+	content: string,
+	theme: Theme,
+	width: number,
+	expanded: boolean,
+): string[] {
+	if (details && details.task) {
+		if (details.kind === "still-running") {
+			return [withBullet(stillRunningLine(details, width), "dim", theme)];
+		}
+		if (expanded) {
+			return notificationExpandedLines(details, [], width).map((line, index) =>
+				withBullet(index === 0 ? line : ` ${line}`, index === 0 ? statusColorToken(details.task.status) : "dim", theme),
+			);
+		}
+		return [withBullet(notificationCollapsedLine(details, width), statusColorToken(details.task.status), theme)];
+	}
+
+	// XML fallback — details were lost in transport; parse what we shipped.
+	const parsed = parseNotificationXml(content);
+	if (!parsed) return [];
+	if (parsed.status === "killed") {
+		return [withBullet(`● ${parsed.taskId} killed · ${parsed.taskName}${parsed.signal ? ` (${parsed.signal})` : ""}`, "dim", theme)];
+	}
+	const token = parsed.status === "failed" ? "error" : "success";
+	return [
+		withBullet(
+			`● ${parsed.taskId} ${parsed.status} · ${parsed.taskName}${parsed.exitCode !== undefined ? ` · exit ${parsed.exitCode}` : ""}`,
+			token as ThemeColor,
+			theme,
+		),
+	];
+}
+
 export function notificationComponent(
-	details: BgNotificationDetails,
+	details: BgNotificationDetails | undefined,
+	content: string,
 	options: { expanded: boolean },
 	theme: Theme,
 ): Component {
 	let cachedWidth: number | undefined;
 	let cachedLines: string[] | undefined;
-
-	const build = (width: number): string[] => {
-		if (details.kind === "still-running") {
-			return [withBullet(stillRunningLine(details, width), "dim", theme)];
-		}
-		if (options.expanded) {
-			// Output tail is not retained in details (transcript entries are
-			// immutable); the expanded view points at the log instead.
-			const lines = notificationExpandedLines(details, [], width);
-			return lines.map((line, index) =>
-				withBullet(index === 0 ? line : " " + line, index === 0 ? statusColorToken(details.task.status) : "dim", theme),
-			);
-		}
-		return [withBullet(notificationCollapsedLine(details, width), statusColorToken(details.task.status), theme)];
-	};
 
 	return {
 		invalidate() {
@@ -54,7 +109,7 @@ export function notificationComponent(
 		render(width: number): string[] {
 			if (cachedLines === undefined || cachedWidth !== width) {
 				cachedWidth = width;
-				cachedLines = build(width);
+				cachedLines = noticeLineFromDetails(details, content, theme, width, options.expanded === true);
 			}
 			return cachedLines;
 		},
@@ -63,11 +118,14 @@ export function notificationComponent(
 
 /** The MessageRenderer for "bg-task-notification" custom messages. */
 export function renderBgNotification(
-	message: { details?: unknown },
+	message: { content?: unknown; details?: unknown },
 	options: { expanded: boolean },
 	theme: Theme,
 ): Component | undefined {
-	const details = message.details as BgNotificationDetails | undefined;
-	if (!details || typeof details !== "object" || !details.task) return undefined;
-	return notificationComponent(details, options, theme);
+	const content = typeof message.content === "string" ? message.content : "";
+	const details = (message.details ?? undefined) as BgNotificationDetails | undefined;
+	if (!content.includes("background-task-notification") && (!details || typeof details !== "object" || !details.task)) {
+		return undefined;
+	}
+	return notificationComponent(details, content, options, theme);
 }
