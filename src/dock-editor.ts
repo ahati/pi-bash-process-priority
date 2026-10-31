@@ -30,16 +30,36 @@ export class DockEditor extends CustomEditor {
 		this.dock = dock;
 	}
 
+	// Arrow keys arrive in two encodings depending on the terminal's cursor-key
+	// mode: CSI (`[B`) and SS3 (`OB`). matchesKey covers the configured
+	// bindings; these raw forms are belt-and-braces for every terminal.
+	private static readonly DOWN_SEQUENCES = ["[B", "OB"];
+	private static readonly UP_SEQUENCES = ["[A", "OA"];
+
+	private isDown(data: string): boolean {
+		return matchesKey(data, Key.down) || DockEditor.DOWN_SEQUENCES.includes(data);
+	}
+	private isUp(data: string): boolean {
+		return matchesKey(data, Key.up) || DockEditor.UP_SEQUENCES.includes(data);
+	}
+
 	handleInput(data: string): void {
 		if (!this.dock.inDock()) {
 			// ↓ on an empty editor falls through to the dock when it has rows.
-			if (matchesKey(data, Key.down) && this.getText() === "") {
+			if (this.isDown(data)) {
+				if (this.getText().trim() !== "") {
+					debugLog("dock-editor: ↓ ignored (editor not empty)");
+					super.handleInput(data);
+					return;
+				}
 				if (this.dock.enterDock()) {
 					debugLog("dock-editor: ↓ entered dock mode");
 					this.tui.requestRender();
 					return;
 				}
-				debugLog("dock-editor: ↓ but enterDock returned false (no rows)");
+				debugLog("dock-editor: ↓ but enterDock returned false (no running rows)");
+				super.handleInput(data);
+				return;
 			}
 			super.handleInput(data);
 			return;
@@ -52,12 +72,12 @@ export class DockEditor extends CustomEditor {
 			super.handleInput(data);
 			return;
 		}
-		if (matchesKey(data, Key.up)) {
+		if (this.isUp(data)) {
 			this.dock.move(-1);
 			this.tui.requestRender();
 			return;
 		}
-		if (matchesKey(data, Key.down)) {
+		if (this.isDown(data)) {
 			this.dock.move(1);
 			this.tui.requestRender();
 			return;
