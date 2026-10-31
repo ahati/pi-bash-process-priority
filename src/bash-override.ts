@@ -39,6 +39,10 @@ export interface BashOverrideDeps {
 	registry: TaskManagerApi;
 	/** Foreground nice level (PRD-001 contract). */
 	fgNice: number;
+	/** Whether this tool instance is configured for a subagent or main agent session. */
+	callerType?: "agent" | "subagent";
+	/** Optional subagent name/id. */
+	subagentName?: string;
 	/** Notified when a foreground bash command starts/ends (ctrl+b hint/UI). */
 	onForegroundChange?: (inFlight: { command: string } | null) => void;
 	/** Adoption tail buffer bound (§8 PI_BG_LOG_BYTES). Default 50_000. */
@@ -295,14 +299,20 @@ export function requestBackground(toolCallId: string): BgTask | undefined {
 	slot.detach();
 	const preOutput = Buffer.concat(slot.tail, slot.tailBytes);
 	// Register first (§7.2 step 1); adoption never fails because of priority work.
-	const task = depsRegistry?.adopt({
-		child: slot.child,
-		pgid: slot.pgid,
-		command: slot.command,
-		cwd: slot.cwd,
-		startedAt: slot.startedAt,
-		preOutput,
-	});
+	const task = depsRegistry?.adopt(
+		{
+			child: slot.child,
+			pgid: slot.pgid,
+			command: slot.command,
+			cwd: slot.cwd,
+			startedAt: slot.startedAt,
+			preOutput,
+		},
+		{
+			callerType: lastDeps?.callerType,
+			subagentName: lastDeps?.subagentName,
+		},
+	);
 	slots.delete(toolCallId);
 	slot.settle({ exitCode: null });
 	const resolve = pendingBackground.get(toolCallId);
@@ -807,8 +817,14 @@ the call for compatible UI renderers.`;
 		// ---- background branch (PRD-004 §4.1) ---------------------------
 		if (params.background) {
 			const timeoutSeconds = params.timeout;
+			const isSubagent = deps.callerType === "subagent" || (ctx ? !ctx.hasUI : false);
+			const callerType = isSubagent ? "subagent" : (deps.callerType ?? "agent");
+			const subagentName =
+				deps.subagentName ?? (isSubagent && ctx ? ctx.sessionManager?.getSessionName?.() : undefined);
 			const task = await deps.registry.run(command, effectiveCwd, {
 				name: params.taskName,
+				callerType,
+				subagentName,
 				timeoutSeconds,
 			});
 			return {

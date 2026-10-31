@@ -142,6 +142,8 @@ class TaskManager implements TaskManagerApi {
 			command,
 			origin: "bg_task",
 			name: options.name,
+			callerType: options.callerType,
+			subagentName: options.subagentName,
 			pid: null,
 			pgid: null,
 			startedAt: Date.now(),
@@ -195,12 +197,19 @@ class TaskManager implements TaskManagerApi {
 
 	adopt(
 		handle: ForegroundHandle,
-		opts: { name?: string; notificationTimeoutSeconds?: number } = {},
+		opts: {
+			name?: string;
+			callerType?: "agent" | "subagent";
+			subagentName?: string;
+			notificationTimeoutSeconds?: number;
+		} = {},
 	): BgTask {
 		const rec = this.createRecord({
 			command: handle.command,
 			origin: "foreground-adopted",
 			name: opts.name,
+			callerType: opts.callerType,
+			subagentName: opts.subagentName,
 			pid: handle.child.pid ?? null,
 			pgid: handle.pgid,
 			startedAt: handle.startedAt,
@@ -367,6 +376,8 @@ class TaskManager implements TaskManagerApi {
 		command: string;
 		origin: BgTask["origin"];
 		name?: string;
+		callerType?: "agent" | "subagent";
+		subagentName?: string;
 		pid: number | null;
 		pgid: number | null;
 		startedAt: number;
@@ -389,6 +400,8 @@ class TaskManager implements TaskManagerApi {
 			logPath: join(this.logDir, logFileName),
 		};
 		if (input.name !== undefined) task.name = input.name;
+		if (input.callerType !== undefined) task.callerType = input.callerType;
+		if (input.subagentName !== undefined) task.subagentName = input.subagentName;
 
 		let resolveClosed!: () => void;
 		const closed = new Promise<void>((resolve) => {

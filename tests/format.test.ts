@@ -130,6 +130,12 @@ test("detailLines matches the §4.2 header block", () => {
 
 	const linesWithNow = detailLines(task(), 40, task().startedAt + 15_000);
 	assert.equal(linesWithNow[3], "Status:  ● running · 15s");
+
+	const subagentTask = detailLines(task({ callerType: "subagent" }), 40);
+	assert.equal(subagentTask[4], "Type:    Subagent");
+
+	const subagentNamedTask = detailLines(task({ callerType: "subagent", subagentName: "researcher#a1b2c3d4" }), 40);
+	assert.equal(subagentNamedTask[4], "Type:    Subagent (researcher#a1b2c3d4)");
 });
 
 test("notificationCollapsedLine matches Pi style", () => {

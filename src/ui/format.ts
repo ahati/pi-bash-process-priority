@@ -159,12 +159,16 @@ export function detailLines(task: BgTask, width: number, nowMs?: number): string
 	const status = `Status:  ${BULLET} ${statusWord(task.status)}${elapsed}`;
 	const started = `Started: ${formatTimestamp(task.startedAt)}`;
 	const rule = RULE_CHAR.repeat(Math.max(0, width));
+	const typeLine =
+		task.callerType === "subagent"
+			? `Type:    Subagent${task.subagentName ? ` (${task.subagentName})` : ""}`
+			: "Type:    Agent";
 	const lines = [
 		"Task Details",
 		"",
 		`Command: ${singleLine(task.command)}`,
 		status,
-		"Type:    Agent",
+		typeLine,
 		started,
 		"",
 		rule,
@@ -263,8 +267,11 @@ export function notificationExpandedLines(
 		`  Ran:      ${duration} · started ${startedClock} · ended ${endedClock}`,
 		`  Outcome:  ${outcome}`,
 		`  Origin:   ${humanizeOrigin(task.origin)}`,
-		`  Output:   ${task.logPath}`,
 	];
+	if (task.callerType === "subagent") {
+		lines.push(`  Caller:   Subagent${task.subagentName ? ` (${task.subagentName})` : ""}`);
+	}
+	lines.push(`  Output:   ${task.logPath}`);
 
 	if (tailLines.length > 0) {
 		lines.push(`  ${RULE_CHAR.repeat(Math.max(0, width - 2))}`);

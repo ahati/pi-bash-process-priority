@@ -86,10 +86,32 @@ function notificationXml(task: BgTask): string {
 	return lines.join("\n");
 }
 
+export const SHARED_TASK_MANAGER_KEY = Symbol.for("pi-bash:shared-task-manager");
+
+interface SharedRegistryEntry {
+	registry: TaskManagerApi;
+	mainSessionId?: string;
+}
+
+export function isSubagentSession(ctx: ExtensionContext): boolean {
+	if (ctx.sessionManager?.getHeader?.()?.parentSession) return true;
+	const name = ctx.sessionManager?.getSessionName?.();
+	if (name && /#([a-f0-9]{4,17})$/i.test(name)) return true;
+	const shared = (globalThis as any)[SHARED_TASK_MANAGER_KEY] as SharedRegistryEntry | undefined;
+	if (!ctx.hasUI && shared) return true;
+	if (!ctx.hasUI && !ctx.sessionManager?.getSessionFile?.()) return true;
+	return false;
+}
+
+export function getSubagentLabel(ctx: ExtensionContext): string | undefined {
+	return ctx.sessionManager?.getSessionName?.() || undefined;
+}
+
 export default function (pi: ExtensionAPI) {
 	// Legacy PRD-001 state: active only when PRD-003 is not.
 	let legacyConfig: NiceConfig | undefined;
 	let overrideActive = false;
+	let isSubagentRuntime = false;
 
 	// PRD-003 session state.
 	let registry: TaskManagerApi | undefined;
@@ -139,6 +161,9 @@ export default function (pi: ExtensionAPI) {
 		editorInstalled = false;
 		resetBashOverrideState();
 
+		isSubagentRuntime = isSubagentSession(ctx);
+		const subagentName = isSubagentRuntime ? getSubagentLabel(ctx) : undefined;
+
 		const bg = resolveBgConfig(process.env, process.platform);
 		initDebugLog(resolveLogDir(bg, ctx.cwd));
 		debugLog("session_start", { mode: ctx.mode, hasUI: ctx.hasUI, cwd: ctx.cwd, bgNice: bg.bgNice });
@@ -175,65 +200,78 @@ export default function (pi: ExtensionAPI) {
 		const bgNice = niceOk ? bg.bgNice : 0;
 		const ioniceClass = niceOk && ioniceOk ? bg.ioniceClass : 0;
 
-		registry = createTaskManager({
-			logDir: resolveLogDir(bg, ctx.cwd),
-			sessionId: ctx.sessionManager?.getSessionId?.(),
-			killGraceMs: bg.killGraceMs,
-			logBytes: bg.logBytes,
-			maxFinished: bg.tasksMax,
-			bgNice,
-			ioniceClass,
-			onChange: () => {
-				// Dock/footer refresh themselves via registry listeners installed below.
-			},
-			onTransition: (kind, task) => {
-				debugLog("onTransition", { kind, id: task.id });
-				appendTaskState(kind, task);
-			},
-			onTerminal: (task) => {
-				debugLog("onTerminal", task);
-				appendTaskState("terminal", task);
-				const details: BgNotificationDetails = {
-					kind: "terminal",
-					task,
-					durationText: task.endedAt ? formatDuration(Math.max(0, task.endedAt - task.startedAt)) : undefined,
-				};
-				debugLog("sendMessage:followUp", { id: task.id, status: task.status });
-				try {
+		const shared = (globalThis as any)[SHARED_TASK_MANAGER_KEY] as SharedRegistryEntry | undefined;
+		if (isSubagentRuntime && shared) {
+			debugLog("session_start: attaching subagent to shared task registry", { subagentName });
+			registry = shared.registry;
+		} else {
+			registry = createTaskManager({
+				logDir: resolveLogDir(bg, ctx.cwd),
+				sessionId: ctx.sessionManager?.getSessionId?.(),
+				killGraceMs: bg.killGraceMs,
+				logBytes: bg.logBytes,
+				maxFinished: bg.tasksMax,
+				bgNice,
+				ioniceClass,
+				onChange: () => {
+					// Dock/footer refresh themselves via registry listeners installed below.
+				},
+				onTransition: (kind, task) => {
+					debugLog("onTransition", { kind, id: task.id });
+					appendTaskState(kind, task);
+				},
+				onTerminal: (task) => {
+					debugLog("onTerminal", task);
+					appendTaskState("terminal", task);
+					const details: BgNotificationDetails = {
+						kind: "terminal",
+						task,
+						durationText: task.endedAt ? formatDuration(Math.max(0, task.endedAt - task.startedAt)) : undefined,
+					};
+					debugLog("sendMessage:followUp", { id: task.id, status: task.status });
+					try {
+						pi.sendMessage(
+							{
+								customType: "bg-task-notification",
+								content: notificationXml(task),
+								display: true,
+								details,
+							},
+							{ deliverAs: "followUp", triggerTurn: true },
+						);
+						debugLog("sendMessage:followUp returned", task.id);
+					} catch (error) {
+						debugLogError("sendMessage:followUp threw", error);
+					}
+				},
+				onStillRunning: (task, elapsedSeconds) => {
+					debugLog("onStillRunning", { id: task.id, elapsedSeconds });
+					appendTaskState("still-running", task);
+					const details: BgNotificationDetails = {
+						kind: "still-running",
+						task,
+						elapsedSeconds,
+						startedClock: new Date(task.startedAt).toLocaleTimeString(),
+					};
 					pi.sendMessage(
 						{
 							customType: "bg-task-notification",
-							content: notificationXml(task),
+							content: `Background command is still running after ${elapsedSeconds}s: ${task.command}`,
 							display: true,
 							details,
 						},
-						{ deliverAs: "followUp", triggerTurn: true },
+						{ deliverAs: "followUp", triggerTurn: false },
 					);
-					debugLog("sendMessage:followUp returned", task.id);
-				} catch (error) {
-					debugLogError("sendMessage:followUp threw", error);
-				}
-			},
-			onStillRunning: (task, elapsedSeconds) => {
-				debugLog("onStillRunning", { id: task.id, elapsedSeconds });
-				appendTaskState("still-running", task);
-				const details: BgNotificationDetails = {
-					kind: "still-running",
-					task,
-					elapsedSeconds,
-					startedClock: new Date(task.startedAt).toLocaleTimeString(),
+				},
+			});
+
+			if (!isSubagentRuntime) {
+				(globalThis as any)[SHARED_TASK_MANAGER_KEY] = {
+					registry,
+					mainSessionId: ctx.sessionManager?.getSessionId?.(),
 				};
-				pi.sendMessage(
-					{
-						customType: "bg-task-notification",
-						content: `Background command is still running after ${elapsedSeconds}s: ${task.command}`,
-						display: true,
-						details,
-					},
-					{ deliverAs: "followUp", triggerTurn: false },
-				);
-			},
-		});
+			}
+		}
 
 		// Rebuild branch-aware state from prior tool results and task notifications (§7.3).
 		try {
@@ -287,6 +325,8 @@ export default function (pi: ExtensionAPI) {
 				createBackgroundAwareBashTool(ctx.cwd, {
 					registry,
 					fgNice,
+					callerType: isSubagentRuntime ? "subagent" : "agent",
+					subagentName,
 					logBytes: bg.logBytes,
 					killGraceMs: bg.killGraceMs,
 					fgTimeoutMax: bg.fgTimeoutMax,
@@ -407,6 +447,11 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async () => {
+		if (isSubagentRuntime) {
+			debugLog("session_shutdown: subagent session ending, preserving shared registry");
+			return;
+		}
+		delete (globalThis as any)[SHARED_TASK_MANAGER_KEY];
 		disposeUI?.();
 		disposeUI = undefined;
 		try {

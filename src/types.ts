@@ -26,6 +26,10 @@ export interface BgTask {
 	command: string;
 	/** Optional model-provided name; survives into notifications and lists. */
 	name?: string;
+	/** Whether the task was initiated by the main agent or a subagent. */
+	callerType?: "agent" | "subagent";
+	/** Optional subagent identifier/name (e.g. "researcher#a1b2c3d4"). */
+	subagentName?: string;
 	origin: BgTaskOrigin;
 	status: BgTaskStatus;
 	pid: number | null;
@@ -117,6 +121,10 @@ export interface TaskManagerOptions {
 export interface RunOptions {
 	/** Optional human-readable task name (agy: name survives backgrounding). */
 	name?: string;
+	/** Whether the task was initiated by the main agent or a subagent. */
+	callerType?: "agent" | "subagent";
+	/** Optional subagent identifier/name (e.g. "researcher#a1b2c3d4"). */
+	subagentName?: string;
 	/**
 	 * Still-running notice timeout in seconds (§7.6). The registry arms the
 	 * timer and reports through onTerminal with kind "still-running" semantics
@@ -135,7 +143,15 @@ export interface TaskManagerApi {
 	/** Start `command` at bg priority; resolves once the child spawns. */
 	run(command: string, cwd: string, options?: RunOptions): Promise<BgTask>;
 	/** Adopt a foreground child (ctrl+b) — never restarts or kills it (§7.2). */
-	adopt(handle: ForegroundHandle, opts?: { name?: string; notificationTimeoutSeconds?: number }): BgTask;
+	adopt(
+		handle: ForegroundHandle,
+		opts?: {
+			name?: string;
+			callerType?: "agent" | "subagent";
+			subagentName?: string;
+			notificationTimeoutSeconds?: number;
+		},
+	): BgTask;
 	/** SIGTERM → grace → SIGKILL the whole group; ESRCH counts as success. */
 	kill(idOrPrefix: string, reason?: string): Promise<string>;
 	/** Write `<input>\n` to the task's stdin. */

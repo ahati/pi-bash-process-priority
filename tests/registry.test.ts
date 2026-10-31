@@ -153,6 +153,22 @@ test("logPath includes sessionId when provided", async (t) => {
 	assert.ok(log.includes("hello session"));
 });
 
+test("run stores callerType and subagentName", async (t) => {
+	const h = await harness();
+	t.after(() => cleanup(h));
+
+	const task = await h.manager.run(`printf 'subagent work\\n'`, h.dir, {
+		callerType: "subagent",
+		subagentName: "researcher#123",
+	});
+	assert.equal(task.callerType, "subagent");
+	assert.equal(task.subagentName, "researcher#123");
+
+	const done = await h.waitTerminal(task.id);
+	assert.equal(done.callerType, "subagent");
+	assert.equal(done.subagentName, "researcher#123");
+});
+
 test("run -> kill: status killed, reason recorded, group gone", async (t) => {
 	const h = await harness();
 	t.after(() => cleanup(h));
@@ -177,6 +193,7 @@ test("kill escalates SIGTERM -> SIGKILL after grace", async (t) => {
 	const done = h.manager.get(task.id)!;
 	assert.equal(done.status, "killed");
 	assert.ok(Date.now() - started >= 120, "waited the grace period");
+	await waitUntil(() => !groupAlive(done.pgid));
 	assert.equal(groupAlive(done.pgid), false);
 });
 
