@@ -39,6 +39,7 @@ class TasksPanel implements Component {
 		private readonly ui: ExtensionContext["ui"],
 		private readonly done: () => void,
 		private readonly initialTask?: BgTask,
+		private readonly detailOnly = false,
 	) {
 		if (initialTask) {
 			this.view = "detail";
@@ -95,6 +96,7 @@ class TasksPanel implements Component {
 	private handleDetailInput(data: string): void {
 		const height = this.pageSize();
 		if (matchesKey(data, Key.escape)) {
+			if (this.detailOnly) { this.close(); return; }
 			this.backToList();
 			return;
 		}
@@ -307,8 +309,9 @@ export async function openTasksPanel(
 	registry: TaskManagerApi,
 	_keybindings: KeybindingsManager,
 	initialTask?: BgTask,
+	detailOnly = false,
 ): Promise<void> {
 	await ctx.ui.custom<void>((_tui, theme, _keybindings, done) => {
-		return new TasksPanel(theme, registry, ctx.ui, done, initialTask);
+		return new TasksPanel(theme, registry, ctx.ui, done, initialTask, detailOnly);
 	});
 }
