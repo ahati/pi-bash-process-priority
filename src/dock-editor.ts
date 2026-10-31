@@ -9,6 +9,7 @@ import { Key, matchesKey } from "@earendil-works/pi-tui";
 import type { TUI } from "@earendil-works/pi-tui";
 import type { EditorTheme } from "@earendil-works/pi-tui";
 import type { BgTask } from "./types.ts";
+import { debugLog } from "./debug.ts";
 import type { DockController } from "./ui/dock.ts";
 
 export class DockEditor extends CustomEditor {
@@ -34,13 +35,16 @@ export class DockEditor extends CustomEditor {
 			// ↓ on an empty editor falls through to the dock when it has rows.
 			if (matchesKey(data, Key.down) && this.getText() === "") {
 				if (this.dock.enterDock()) {
+					debugLog("dock-editor: ↓ entered dock mode");
 					this.tui.requestRender();
 					return;
 				}
+				debugLog("dock-editor: ↓ but enterDock returned false (no rows)");
 			}
 			super.handleInput(data);
 			return;
 		}
+		debugLog("dock-editor: dock-mode key", JSON.stringify(data));
 
 		// Dock mode owns the keyboard.
 		if (data === "\x03") {

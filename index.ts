@@ -323,7 +323,12 @@ export default function (pi: ExtensionAPI) {
 			// (with its own "N task(s) · /tasks" line) is the only injected
 			// chrome — a below-editor widget that renders above the footer.
 			const controller = new DockController(() => (registry ? registry.list().filter((task) => task.status === "running") : []));
-			const dock = installDock(ctx, registry, controller);
+			let dockEditorRef: DockEditor | undefined;
+			const dock = installDock(ctx, registry, controller, {
+				// The bottom rule reuses the live editor's border color so the
+				// dock reads as part of the editor frame.
+				borderColor: (text) => dockEditorRef?.borderColor?.(text) ?? text,
+			});
 			const prevEditor = ctx.ui.getEditorComponent();
 			if (!prevEditor) {
 				ctx.ui.setEditorComponent((tui, theme, keybindings) => {
@@ -331,6 +336,7 @@ export default function (pi: ExtensionAPI) {
 					// editor's top border (native behavior); without it pi renders it
 					// as a separate line above the input.
 					const editor = new DockEditor(tui, theme, keybindings, controller, { embedWorkingStatus: true });
+					dockEditorRef = editor;
 					editor.onOpenTask = (task: BgTask) => {
 						void openTasksPanel(ctxRef as ExtensionContext, registry as TaskManagerApi, keybindings);
 						void task;
@@ -342,6 +348,7 @@ export default function (pi: ExtensionAPI) {
 				});
 				editorInstalled = true;
 			} else if (ctx.hasUI) {
+				debugLog("editor install skipped: another extension owns the editor component");
 				ctx.ui.notify("pi-bash-process-priority: another extension owns the editor — dock selection disabled, /tasks still works", "info");
 			}
 			disposeUI = () => {

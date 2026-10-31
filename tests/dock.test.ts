@@ -128,9 +128,30 @@ test("installDock: task spawns → widget renders row + count line + rules", asy
 		const rendered = renderLatest(calls);
 		assert.ok(rendered, "expected a component factory install after spawn");
 		const text = rendered.lines.join("\n");
-		assert.match(text, /─/); // rule line
-		assert.match(text, /● \[\d\d:\d\d:\d\d\] sleep 2 running/);
-		assert.match(text, /1 task\(s\) · \/tasks/);
+		const first = rendered.lines[0];
+		assert.match(first, /● \[\d\d:\d\d:\d\d\] sleep 2 running/); // no top rule — rows come first
+		assert.match(text, /─/); // bottom rule
+		assert.match(rendered.lines.at(-1) ?? "", /1 task\(s\) · \/tasks/);
+		dock.dispose();
+	} finally {
+		await reg.disposeAll();
+	}
+});
+
+test("installDock: bottom rule uses the injected border color; no top rule", async () => {
+	const reg = makeRegistry();
+	const { ctx, calls } = fakeCtx();
+	try {
+		const controller = new DockController(() => reg.list().filter((t: BgTask) => t.status === "running"));
+		const dock = installDock(ctx as never, reg, controller, {
+			borderColor: (text: string) => `B${text}B`,
+		});
+		await reg.run("sleep 2", "/tmp");
+		const rendered = renderLatest(calls);
+		assert.ok(rendered);
+		assert.doesNotMatch(rendered.lines[0], /^B/); // no border-colored top rule
+		const rules = rendered.lines.filter((line) => line.startsWith("B") && line.includes("─"));
+		assert.equal(rules.length, 1, "exactly one bottom rule, border-colored");
 		dock.dispose();
 	} finally {
 		await reg.disposeAll();
@@ -149,7 +170,7 @@ test("installDock: rows clamp to 7 and the count line reports all running tasks"
 		assert.ok(rendered);
 		const rowLines = rendered.lines.filter((line) => line.includes("● ["));
 		assert.equal(rowLines.length <= 7, true, `expected \u22647 rows, got ${rowLines.length}`);
-		assert.match(rendered.lines.at(-1) ?? "", /9 task\(s\) · \/tasks/);
+		assert.match(rendered.lines.join("\n"), /9 task\(s\) · \/tasks/);
 		dock.dispose();
 	} finally {
 		await reg.disposeAll();

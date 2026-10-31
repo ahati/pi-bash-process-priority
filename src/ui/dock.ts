@@ -9,7 +9,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, type Component, type TUI } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { BgTask, TaskManagerApi } from "../types.ts";
-import { dockFrame, dockRow, statusColorToken } from "./format.ts";
+import { dockRow, RULE_CHAR, statusColorToken } from "./format.ts";
 import { debugLog } from "../debug.ts";
 
 export const DOCK_WIDGET_KEY = "bg-tasks";
@@ -102,11 +102,21 @@ interface DockWidget extends Component {
  * exists; the extra tick after the last task finishes hides the widget and then
  * stops.
  */
+export interface DockOptions {
+	/**
+	 * Color function for the dock's bottom rule — wired to the live editor's
+	 * `borderColor` so the bar visually matches the editor frame.
+	 */
+	borderColor?: (text: string) => string;
+}
+
 export function installDock(
 	ctx: ExtensionContext,
 	registry: TaskManagerApi,
 	controller: DockController,
-): { dispose(): void; refresh(): void } {
+	options: DockOptions = {},
+): { dispose(): void; refresh(): void; setBorderColor(fn: (text: string) => string): void } {
+	let borderColor: ((text: string) => string) | undefined = options.borderColor;
 	let ticker: ReturnType<typeof setInterval> | undefined;
 	let widget: DockWidget | undefined;
 	let visible = false;
@@ -194,10 +204,12 @@ export function installDock(
 				const rows = all.slice(0, 7);
 				const selectedIndex = controller.inDock() ? controller.selectedIndex() : -1;
 				const lines = rows.map((task, i) => colorBullet(dockRow(task, i === selectedIndex, width), task.status, theme));
-				const framed = dockFrame(lines, width);
-				const countLine = theme.fg("dim", `${all.length} task(s) · /tasks`);
-				framed.push(truncateToWidth(countLine, width));
-				lastRendered = framed;
+				// No top rule (the editor frame already separates); the bottom rule
+				// matches the editor border color so the block reads as one frame.
+				const rule = borderColor ? borderColor(RULE_CHAR.repeat(width)) : theme.fg("dim", RULE_CHAR.repeat(width));
+				lines.push(truncateToWidth(rule, width));
+				lines.push(truncateToWidth(theme.fg("dim", `${all.length} task(s) · /tasks`), width));
+				lastRendered = lines;
 				return lastRendered;
 			},
 			dispose() {
@@ -229,5 +241,12 @@ export function installDock(
 		ctx.ui.setWidget(DOCK_WIDGET_KEY, undefined, { placement: "belowEditor" });
 	};
 
-	return { dispose, refresh };
+	return {
+		dispose,
+		refresh,
+		setBorderColor(fn: (text: string) => string): void {
+			borderColor = fn;
+			widget?.invalidate?.();
+		},
+	};
 }
