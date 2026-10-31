@@ -161,6 +161,64 @@ export function formatBackgroundToolResult(task: BgTask): string {
 }
 
 /**
+ * Normalize raw bash tool arguments BEFORE schema validation (PRD-004
+ * §4.1, wired via ToolDefinition.prepareArguments). Models routinely emit
+ * empty strings for optional parameters ("taskAction": "", "cwd": "" …),
+ * which fails the taskAction enum; they also stringify booleans/numbers.
+ * Rules: blank strings become absent; "true"/"false" coerce to booleans;
+ * numeric strings coerce to numbers; an unrecognized taskAction is dropped
+ * (the call then executes as a normal foreground command).
+ */
+export interface NormalizedBashArgs {
+	command?: string;
+	timeout?: number;
+	background?: boolean;
+	taskName?: string;
+	cwd?: string;
+	intent?: string;
+	tool?: string;
+	taskAction?: "list" | "status" | "kill" | "input" | "adopt";
+	taskId?: string;
+	input?: string;
+}
+
+const TASK_ACTIONS = new Set(["list", "status", "kill", "input", "adopt"]);
+
+export function normalizeBashArgs(raw: unknown): NormalizedBashArgs {
+	const args = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
+	const out: NormalizedBashArgs = {};
+
+	const str = (key: keyof NormalizedBashArgs): void => {
+		const value = args[key];
+		if (typeof value === "string" && value.trim() !== "") out[key] = value as never;
+	};
+
+	str("command");
+	str("taskName");
+	str("cwd");
+	str("intent");
+	str("tool");
+	str("taskId");
+	str("input");
+
+	if (typeof args.timeout === "number" && Number.isFinite(args.timeout)) {
+		out.timeout = args.timeout;
+	} else if (typeof args.timeout === "string" && args.timeout.trim() !== "" && !Number.isNaN(Number(args.timeout))) {
+		out.timeout = Number(args.timeout);
+	}
+
+	if (typeof args.background === "boolean") out.background = args.background;
+	else if (args.background === "true") out.background = true;
+	else if (args.background === "false") out.background = false;
+
+	if (typeof args.taskAction === "string" && TASK_ACTIONS.has(args.taskAction)) {
+		out.taskAction = args.taskAction as NormalizedBashArgs["taskAction"];
+	}
+
+	return out;
+}
+
+/**
  * Drop a redundant leading `cd <tool-cwd> &&` (PRD-004 §4.1): models often
  * emit `cd <current-dir-full-path> && …` although the tool already runs in
  * that directory. Only an exact match against `cwd` (after unquoting and
@@ -589,6 +647,7 @@ export function createBackgroundAwareBashTool(cwd: string, deps: BashOverrideDep
 		...builtin,
 		parameters: bashParams,
 		description: amendedDescription,
+		prepareArguments: (args: unknown) => normalizeBashArgs(args) as unknown,
 		renderCall,
 		execute: ourExecute,
 	} as unknown as ToolDefinition;

@@ -87,6 +87,7 @@ Constraints (verified, pi 1.4.0): RPC `bash` never passes through the registered
 - **`cwd`**: spawn-level working directory, defaults to pi's execution directory. A leading `cd <current-directory> &&` (any quoting, trailing-slash tolerant, exact match) is **dropped automatically** — other `cd`s are preserved.
 - **Rendering**: the expanded (`ctrl+o`) call view shows a `cwd: <path>` line; `taskAction` calls render as `bash tasks <action> [taskId]` instead of a command line.
 - The tool description documents the modes, the timeout caps (with the configured numbers), the `cwd` default, and the `cd`-drop behavior.
+- **`prepareArguments` normalization**: models routinely fill optional parameters with empty strings (`"taskAction": ""`), which fails the enum validation. Raw args are normalized before validation — blank strings become absent, `"true"`/`"false"` and numeric strings coerce, unknown `taskAction` values are dropped (the call then runs as a normal foreground command).
 
 Configuration:
 
