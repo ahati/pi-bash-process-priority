@@ -16,6 +16,7 @@ const TICK_MS = 1000;
 
 const LIST_HINT = "↑/↓ select · enter details · k kill · s input · esc close";
 const DETAIL_HINT = "↑/↓ scroll · pgup/pgdown page · ctrl+end bottom · ctrl+home top · esc back";
+const DETAIL_VIEWPORT_HEIGHT = 10;
 
 type View = "list" | "detail";
 
@@ -226,7 +227,7 @@ class TasksPanel implements Component {
 	}
 
 	private pageSize(): number {
-		return Math.max(1, this.output.length - 2);
+		return DETAIL_VIEWPORT_HEIGHT;
 	}
 
 	private maxScroll(height: number): number {
@@ -286,7 +287,7 @@ class TasksPanel implements Component {
 		if (!task) return [this.theme.fg("dim", "No background tasks."), "", this.theme.fg("dim", LIST_HINT)];
 		const lines: string[] = detailLines(task, width);
 		lines.push(""); // blank line between "Output" and the content (§4.2)
-		const height = Math.max(1, 10);
+		const height = DETAIL_VIEWPORT_HEIGHT;
 		const maxScroll = Math.max(0, this.output.length - height);
 		if (this.follow) this.scroll = maxScroll;
 		this.scroll = Math.max(0, Math.min(maxScroll, this.scroll));

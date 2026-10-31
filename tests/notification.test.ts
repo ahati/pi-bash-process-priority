@@ -35,6 +35,20 @@ test("renderer: styled collapsed line from details", () => {
 	assert.match(lines.join("\n"), /sleep 120/);
 });
 
+test("renderer: styled expanded card from details", () => {
+	const details: BgNotificationDetails = {
+		kind: "terminal",
+		task: { id: "task-1", command: "sleep 120", origin: "bg_task", status: "completed", pid: 1, pgid: 1, startedAt: 0, endedAt: 120000, exitCode: 0, signal: null, logPath: "/tmp/t1.log" },
+	};
+	const component = renderBgNotification({ content: XML, details }, { expanded: true }, THEME as never);
+	const rendered = component!.render(200).join("\n");
+	assert.match(rendered, /Background task completed — task-1/);
+	assert.match(rendered, /Command:\s+\$\s+sleep 120/);
+	assert.match(rendered, /Outcome:\s+exit 0/);
+	assert.match(rendered, /Origin:\s+bg_task/);
+	assert.match(rendered, /Output:\s+\/tmp\/t1\.log/);
+});
+
 test("renderer: XML fallback renders the notice when details are lost", () => {
 	const component = renderBgNotification({ content: XML }, { expanded: false }, THEME as never);
 	assert.notEqual(component, undefined);

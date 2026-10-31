@@ -21,7 +21,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { constants as osConstants } from "node:os";
 import { createBashToolDefinition, type BashOperations, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
-import { Type, type Static } from "typebox";
+import { Type, type Static, type TObject, type TSchema } from "typebox";
 import { buildNiceCommand } from "./nice.ts";
 import type { BgTask, TaskManagerApi } from "./types.ts";
 
@@ -363,6 +363,87 @@ function resolveTimeoutMs(timeout: number | undefined): number | undefined {
 	return timeoutMs;
 }
 
+/**
+ * Flatten mutually exclusive object variants into one provider-safe tool schema.
+ *
+ * The variants are the contract: each declares its own parameters plainly, so
+ * `command` is required in the execute variant and `taskAction` (+ `taskId`,
+ * `input`) is required in the management variants — no `Type.Optional` around
+ * the fields that matter.
+ *
+ * A bare `Type.Union(variants)` cannot be used as the tool schema, though: pi's
+ * Anthropic adapter rebuilds `input_schema` as
+ * `{ type: "object", properties: schema.properties ?? {} }`, so a top-level
+ * union would ship `properties: {}` and leave the model with no arguments.
+ * Flattening therefore emits
+ *
+ *     { type: "object", properties: {…}, oneOf: [{required: […]}, …] }
+ *
+ * which stays object-shaped for every provider while the validator still
+ * requires exactly one variant. Properties are inevitably re-declared optional
+ * at the root — JSON Schema property optionality is per-object, not per-branch
+ * — so that mechanical (and lossless) part is generated here rather than
+ * hand-written at the declaration site.
+ */
+function flattenVariants(
+	executeVariant: TObject,
+	manageVariants: TObject[],
+	options: Record<string, unknown> = {},
+): TObject {
+	/** key → every distinct schema any variant declares for it. */
+	const byKey = new Map<string, TSchema[]>();
+	const addProperty = (key: string, schema: TSchema): void => {
+		const known = byKey.get(key) ?? [];
+		const fingerprint = JSON.stringify(schema);
+		if (!known.some((existing) => JSON.stringify(existing) === fingerprint)) known.push(schema);
+		byKey.set(key, known);
+	};
+
+	for (const [key, schema] of Object.entries(executeVariant.properties as Record<string, TSchema>)) {
+		addProperty(key, schema);
+	}
+	for (const variant of manageVariants) {
+		for (const [key, schema] of Object.entries(variant.properties as Record<string, TSchema>)) {
+			addProperty(key, schema);
+		}
+	}
+
+	const branches: Array<{
+		required: string[];
+		properties?: Record<string, TSchema>;
+		not?: { required: string[] };
+	}> = [];
+
+	// Execution branch: requires command, forbids taskAction
+	branches.push({
+		required: [...((executeVariant.required ?? ["command"]) as string[])],
+		not: { required: ["taskAction"] },
+	});
+
+	// Management branches: each requires taskAction (+ action params), forbids command
+	for (const variant of manageVariants) {
+		const properties = variant.properties as Record<string, TSchema>;
+		const discriminator: Record<string, TSchema> = {};
+		for (const [key, schema] of Object.entries(properties)) {
+			if (typeof (schema as { const?: unknown }).const === "string") discriminator[key] = schema;
+		}
+
+		branches.push({
+			required: [...((variant.required ?? []) as string[])],
+			...(Object.keys(discriminator).length > 0 ? { properties: discriminator } : {}),
+			not: { required: ["command"] },
+		});
+	}
+
+	const properties: Record<string, TSchema> = {};
+	for (const [key, schemas] of byKey) {
+		const unionOptions = key === "taskAction" ? { description: "Manage background tasks: list, status, kill, input, adopt." } : undefined;
+		properties[key] = Type.Optional(schemas.length === 1 ? schemas[0]! : Type.Union(schemas, unionOptions));
+	}
+
+	return Type.Object(properties, { ...options, oneOf: branches } as never);
+}
+
 export function createBackgroundAwareBashTool(cwd: string, deps: BashOverrideDeps): ToolDefinition {
 	depsRegistry = deps.registry;
 	lastDeps = deps;
@@ -505,15 +586,27 @@ export function createBackgroundAwareBashTool(cwd: string, deps: BashOverrideDep
 	const fgCap = Math.max(1, deps.fgTimeoutMax ?? 60);
 	const bgCap = Math.max(1, deps.bgTimeoutMax ?? 300);
 
-	// PRD-004 §4.1: extended schema — execution (command/timeout/background/
-	// taskName/cwd) and management (taskAction/taskId/input) in one tool.
-	const bashParams = Type.Object({
-		command: Type.Optional(
-			Type.String({
-				description:
-					"The exact command line to execute. A leading `cd <current-directory> &&` for the current directory is dropped automatically. Required unless taskAction is set.",
-			}),
-		),
+	// PRD-004 §4.1 — one `bash` tool, one entry point per call.
+	//
+	// Declared as mutually exclusive variants, each stating exactly what it
+	// requires. Nothing that a variant needs is wrapped in Type.Optional:
+	//
+	//   execute            → command                       (required)
+	//   taskAction: list   → taskAction                    (required)
+	//   taskAction: status → taskAction + taskId            (both required)
+	//   taskAction: kill   → taskAction + taskId            (both required)
+	//   taskAction: input  → taskAction + taskId + input    (all required)
+	//   taskAction: adopt  → taskAction                    (required)
+	// PRD-004 §4.1 — one `bash` tool, two mutually exclusive functional groups:
+	// 1. Command Execution: `command` is required; execution options (timeout,
+	//    background, taskName, cwd, intent, tool) are optional.
+	// 2. Task Management: `taskAction` is required; `taskId` and `input` are
+	//    required only on the actions that need them.
+	const executeVariant = Type.Object({
+		command: Type.String({
+			description:
+				"The exact command line to execute. A leading `cd <current-directory> &&` for the current directory is dropped automatically.",
+		}),
 		timeout: Type.Optional(
 			Type.Number({
 				description: `Optional. Max seconds to run. Foreground commands may run at most ${fgCap}s and background tasks at most ${bgCap}s — larger values are rejected.`,
@@ -526,7 +619,9 @@ export function createBackgroundAwareBashTool(cwd: string, deps: BashOverrideDep
 			}),
 		),
 		taskName: Type.Optional(
-			Type.String({ description: "Optional short name for the background task (shown in the task list and notifications)." }),
+			Type.String({
+				description: "Optional short name for the background task (shown in the task list and notifications). Only valid with background=true.",
+			}),
 		),
 		cwd: Type.Optional(
 			Type.String({ description: "Optional working directory. Defaults to the current execution directory." }),
@@ -543,28 +638,56 @@ export function createBackgroundAwareBashTool(cwd: string, deps: BashOverrideDep
 					"Optional header label shown by compatible renderers (e.g. pi-ui-enhancement), e.g. 'git status'.",
 			}),
 		),
-		taskAction: Type.Optional(
-			Type.Union(
-				[
-					Type.Literal("list"),
-					Type.Literal("status"),
-					Type.Literal("kill"),
-					Type.Literal("input"),
-					Type.Literal("adopt"),
-				],
-				{
-					description:
-						"Manage background tasks instead of executing a command: 'list' reports tasks (running first), " +
-						"'status' shows a task's state plus output tail, 'kill' terminates a task, 'input' writes to a task's " +
-						"stdin, 'adopt' moves the currently running foreground command into a background task. " +
-						"When set, all execution parameters are ignored.",
-				},
-			),
-		),
-		taskId: Type.Optional(Type.String({ description: 'Task id such as "task-7" (required for status/kill/input).' })),
-		input: Type.Optional(Type.String({ description: "Text to write to the task stdin (required with taskAction 'input')." })),
 	});
-	type BashParams = Static<typeof bashParams>;
+
+	const taskIdField = Type.String({ description: 'Task id such as "task-7" (required for status/kill/input).' });
+	const inputField = Type.String({ description: "Text to write to the task stdin (required with taskAction 'input', newline appended)." });
+
+	const manageVariants = [
+		Type.Object({
+			taskAction: Type.Literal("list", { description: "Report all background tasks, running first." }),
+		}),
+		Type.Object({
+			taskAction: Type.Literal("status", { description: "Show one task's state plus the tail of its output." }),
+			taskId: taskIdField,
+		}),
+		Type.Object({
+			taskAction: Type.Literal("kill", { description: "Terminate one background task." }),
+			taskId: taskIdField,
+		}),
+		Type.Object({
+			taskAction: Type.Literal("input", { description: "Write text to one background task's stdin." }),
+			taskId: taskIdField,
+			input: inputField,
+		}),
+		Type.Object({
+			taskAction: Type.Literal("adopt", {
+				description: "Move the currently running foreground command into a background task.",
+			}),
+		}),
+	];
+
+	const bashParams = flattenVariants(executeVariant, manageVariants, {
+		description:
+			"Exactly one entry point per call: `command` (with optional execution parameters: timeout, background, taskName, cwd, intent, tool) " +
+			"to execute a command, or `taskAction` (with action parameters: taskId, input) to manage background tasks. " +
+			"taskId is required for status/kill/input; input text is required for taskAction 'input'.",
+	});
+
+	// The compile-time mirror of the schema above: exactly one entry point, and
+	// the parameters each action requires are non-optional in its variant.
+	// `execute` only ever sees arguments that already passed validation.
+	type TaskActionName = NonNullable<NormalizedBashArgs["taskAction"]>;
+	type BashParams = {
+		timeout?: number;
+		background?: boolean;
+		taskName?: string;
+		cwd?: string;
+		intent?: string;
+		tool?: string;
+		taskId?: string;
+		input?: string;
+	} & ({ command: string; taskAction?: undefined } | { command?: undefined; taskAction: TaskActionName });
 
 	// Fully overridden description (PRD-004 §4.1): documents every parameter,
 	// both execution modes, the timeout caps and rejection semantics, priority,
@@ -586,6 +709,10 @@ Label the task with taskName.
 
 ## Parameters
 
+Every call must supply **exactly one** of \`command\` (execute something) or
+\`taskAction\` (manage background tasks) — the schema rejects a call with
+neither, and a call with both.
+
 - command: the exact command line. A leading \`cd <current-directory> &&\`
   (or \`cd .\` / \`cd $PWD\`) is redundant — the tool already runs in the
   current directory — and is dropped automatically. A \`cd\` to a DIFFERENT
@@ -604,10 +731,18 @@ Label the task with taskName.
 1. After starting a background task, either continue other work or end your
    turn. The system notifies you when the task finishes — NEVER poll, and
    never use sleep to wait for a task.
-2. Manage tasks with taskAction: "list" (all tasks, running first), "status"
-   (state + recent output), "kill" (terminate), "input" (write to a task's
-   stdin), "adopt" (move the currently running foreground command to the
-   background). When taskAction is set, all execution parameters are ignored.
+2. Manage tasks with taskAction — the schema enforces each action's own
+   parameters, so a call that omits them is rejected before it runs:
+
+   | taskAction | required parameters            | what it does                        |
+   | ---------- | ------------------------------ | ----------------------------------- |
+   | list       | —                              | all tasks, running first            |
+   | status     | taskId                         | state + recent output               |
+   | kill       | taskId                         | terminate the task                  |
+   | input      | taskId + input                 | write text to the task's stdin      |
+   | adopt      | —                              | move the running foreground command |
+
+   When taskAction is set, all execution parameters are ignored.
 3. If the user asks to move a running foreground command to the background,
    use taskAction "adopt".
 
@@ -653,7 +788,14 @@ the call for compatible UI renderers.`;
 		}
 		if (params.command === undefined || params.command.trim() === "") {
 			return {
-				content: [{ type: "text", text: "Missing required parameter: command (or set taskAction)." }],
+				content: [
+					{
+						type: "text",
+						text:
+							"Provide exactly one of `command` (to execute a shell command) or `taskAction` " +
+							"(list/status/kill/input/adopt to manage background tasks).",
+					},
+				],
 				isError: true,
 			};
 		}
@@ -730,14 +872,15 @@ the call for compatible UI renderers.`;
 			: undefined;
 		const base = managementLine ? undefined : baseRenderCall?.(args as { command: string }, theme, context);
 		if (!base) {
-			const lines = managementLine ?? [];
 			return {
 				invalidate() {},
 				render(width: number): string[] {
-					const out = context.expanded && !managementLine && args.cwd?.trim() ? lines : lines;
+					const out = managementLine ? [...managementLine] : [];
 					if (!managementLine) {
 						const effectiveCwd = args.cwd?.trim() ? args.cwd : context.cwd || cwd;
-						if (context.expanded) out.push(truncateToWidth(theme.fg("dim", `cwd: ${effectiveCwd}`), width));
+						if (context.expanded && effectiveCwd) {
+							out.push(truncateToWidth(theme.fg("dim", `cwd: ${effectiveCwd}`), width));
+						}
 					}
 					return out.map((line) => truncateToWidth(line, width));
 				},

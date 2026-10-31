@@ -95,7 +95,7 @@ export function humanizeOrigin(origin: BgTaskOrigin): string {
 // ---------------------------------------------------------------------------
 
 /** Collapse a command to one display line (dock rows are single-line). */
-function singleLine(text: string): string {
+export function singleLine(text: string): string {
 	return text.replace(/\s+/g, " ").trim();
 }
 
@@ -168,43 +168,69 @@ export function detailLines(task: BgTask, width: number): string[] {
 }
 
 // ---------------------------------------------------------------------------
-// Notification renderer lines (§7.10)
+// Notification renderer lines (Pi style)
 // ---------------------------------------------------------------------------
 
 function notificationCommand(task: BgTask): string {
 	return singleLine(task.command);
 }
 
-/** Collapsed terminal notification: "● task-2 completed · sleep 120 · exit 0 · 2m 01s". */
-export function notificationCollapsedLine(details: BgNotificationDetails, width: number): string {
+/** Formats the outcome metadata badge: "exit 0 · 35s" or "SIGKILL · 12s". */
+export function notificationMeta(details: BgNotificationDetails): string {
 	const { task } = details;
-	const segments: string[] = [notificationCommand(task)];
+	const parts: string[] = [];
 
 	if (task.status === "failed") {
 		const label = terminalStatusLabel(task);
-		if (label) segments.push(label);
+		if (label) parts.push(label);
 	} else if (task.status === "killed") {
 		const label = task.reason ?? terminalStatusLabel(task);
-		if (label) segments.push(label);
+		if (label) parts.push(label);
 	} else if (task.status === "completed") {
 		const label = terminalStatusLabel(task);
-		if (label) segments.push(label);
+		if (label) parts.push(label);
 	}
 
 	const duration =
 		details.durationText ??
 		(task.endedAt !== null ? formatDuration(task.endedAt - task.startedAt) : undefined);
-	if (duration) segments.push(duration);
+	if (duration) parts.push(duration);
 
-	return truncateToWidth(
-		`${BULLET} ${task.id} ${statusWord(task.status)}${SEGMENT_SEPARATOR}${segments.join(SEGMENT_SEPARATOR)}`,
-		width,
-	);
+	return parts.join(" · ");
+}
+
+/** Status glyph: "✓" for completed, "✗" for failed, "⏾" for killed/running. */
+export function statusGlyph(status: BgTaskStatus): string {
+	if (status === "completed") return "✓";
+	if (status === "failed") return "✗";
+	return "⏾";
+}
+
+/** Collapsed Pi-style notification line 1: "✓ task-1 completed (exit 0 · 35s)". */
+export function notificationCollapsedLine(details: BgNotificationDetails, width: number): string {
+	const { task } = details;
+	const glyph = statusGlyph(task.status);
+	const meta = notificationMeta(details);
+	const metaText = meta ? ` (${meta})` : "";
+	return truncateToWidth(`${glyph} ${task.id} ${statusWord(task.status)}${metaText}`, width);
+}
+
+/** Collapsed Pi-style notification line 2: "  ⎿ $ sleep 35". */
+export function notificationBranchLine(details: BgNotificationDetails, width: number): string {
+	return truncateToWidth(`  ⎿ $ ${notificationCommand(details.task)}`, width);
+}
+
+/** Collapsed Pi-style notification: returns [headerLine, branchLine]. */
+export function notificationCollapsedLines(details: BgNotificationDetails, width: number): string[] {
+	return [
+		notificationCollapsedLine(details, width),
+		notificationBranchLine(details, width),
+	];
 }
 
 /**
- * Expanded terminal notification block (§7.10): header, aligned metadata,
- * a rule, then the tail lines indented two spaces. Every line is truncated.
+ * Expanded terminal notification block (Pi style): header, aligned metadata,
+ * a rule, then the tail lines indented two spaces.
  */
 export function notificationExpandedLines(
 	details: BgNotificationDetails,
@@ -212,28 +238,49 @@ export function notificationExpandedLines(
 	width: number,
 ): string[] {
 	const { task } = details;
+	const glyph = statusGlyph(task.status);
 	const startedClock = details.startedClock ?? formatClock(task.startedAt);
 	const endedClock = task.endedAt !== null ? formatClock(task.endedAt) : "now";
 	const duration =
 		details.durationText ??
 		(task.endedAt !== null ? formatDuration(task.endedAt - task.startedAt) : formatDuration(0));
+	const outcome =
+		task.status === "failed"
+			? terminalStatusLabel(task) || "failed"
+			: task.status === "killed"
+				? task.reason ?? terminalStatusLabel(task) ?? "killed"
+				: terminalStatusLabel(task) || "completed";
 
 	const lines = [
-		`${BULLET} Background task ${statusWord(task.status)} — ${task.id}`,
-		`  Command:  ${notificationCommand(task)}`,
+		`${glyph} Background task ${statusWord(task.status)} — ${task.id}`,
+		`  Command:  $ ${notificationCommand(task)}`,
 		`  Ran:      ${duration} · started ${startedClock} · ended ${endedClock}`,
+		`  Outcome:  ${outcome}`,
 		`  Origin:   ${humanizeOrigin(task.origin)}`,
 		`  Output:   ${task.logPath}`,
-		`  ${RULE_CHAR.repeat(Math.max(0, width - 2))}`,
-		...tailLines.map((line) => `  ${singleLine(line)}`),
 	];
+
+	if (tailLines.length > 0) {
+		lines.push(`  ${RULE_CHAR.repeat(Math.max(0, width - 2))}`);
+		for (const line of tailLines) {
+			lines.push(`  ${singleLine(line)}`);
+		}
+	}
+
 	return lines.map((line) => truncateToWidth(line, width));
 }
 
-/** Still-running notice: "○ task-2 still running after 30s · sleep 120". */
+/** Still-running notice line 1: "⏾ task-2 still running after 30s". */
 export function stillRunningLine(details: BgNotificationDetails, width: number): string {
 	const { task } = details;
 	const elapsed = details.elapsedSeconds ?? 0;
-	const line = `${STILL_RUNNING_BULLET} ${task.id} still running after ${elapsed}s${SEGMENT_SEPARATOR}${notificationCommand(task)}`;
-	return truncateToWidth(line, width);
+	return truncateToWidth(`⏾ ${task.id} still running after ${elapsed}s`, width);
+}
+
+/** Still-running notice: returns [headerLine, branchLine]. */
+export function stillRunningLines(details: BgNotificationDetails, width: number): string[] {
+	return [
+		stillRunningLine(details, width),
+		notificationBranchLine(details, width),
+	];
 }

@@ -129,12 +129,12 @@ test("detailLines matches the §4.2 header block", () => {
 	]);
 });
 
-test("notificationCollapsedLine matches §7.10", () => {
+test("notificationCollapsedLine matches Pi style", () => {
 	const d = details({
 		task: task({ status: "completed", exitCode: 0, endedAt: task().startedAt + 121_000 }),
 		durationText: "2m 01s",
 	});
-	assert.equal(notificationCollapsedLine(d, 120), "● task-2 completed · sleep 120 · exit 0 · 2m 01s");
+	assert.equal(notificationCollapsedLine(d, 120), "✓ task-2 completed (exit 0 · 2m 01s)");
 });
 
 test("notificationCollapsedLine adds failure/kill outcomes and truncates", () => {
@@ -143,14 +143,14 @@ test("notificationCollapsedLine adds failure/kill outcomes and truncates", () =>
 			details({ task: task({ status: "failed", exitCode: 1, endedAt: task().startedAt + 45_000 }) }),
 			120,
 		),
-		"● task-2 failed · sleep 120 · exit 1 · 45s",
+		"✗ task-2 failed (exit 1 · 45s)",
 	);
 	assert.equal(
 		notificationCollapsedLine(
 			details({ task: task({ status: "killed", signal: "SIGKILL", reason: "user kill" }) }),
 			120,
 		),
-		"● task-2 killed · sleep 120 · user kill",
+		"⏾ task-2 killed (user kill)",
 	);
 	const wide = details({
 		task: task({ status: "completed", exitCode: 0, endedAt: task().startedAt + 121_000 }),
@@ -159,7 +159,7 @@ test("notificationCollapsedLine adds failure/kill outcomes and truncates", () =>
 	assert.ok(visibleWidth(notificationCollapsedLine(wide, 30)) <= 30);
 });
 
-test("notificationExpandedLines matches §7.10 expanded block", () => {
+test("notificationExpandedLines matches Pi style expanded block", () => {
 	const started = new Date(2026, 9, 31, 10, 56, 52).getTime();
 	const d = details({
 		task: task({ status: "completed", exitCode: 0, startedAt: started, endedAt: started + 121_000 }),
@@ -168,9 +168,10 @@ test("notificationExpandedLines matches §7.10 expanded block", () => {
 	});
 	const lines = notificationExpandedLines(d, ["line one", "line two"], 60);
 	assert.deepEqual(lines, [
-		"● Background task completed — task-2",
-		"  Command:  sleep 120",
+		"✓ Background task completed — task-2",
+		"  Command:  $ sleep 120",
 		"  Ran:      2m 01s · started 10:56:52 · ended 10:58:53",
+		"  Outcome:  exit 0",
 		"  Origin:   bg_task",
 		"  Output:   /tmp/.pi/bg-tasks/task-2.log",
 		`  ${"─".repeat(58)}`,
@@ -185,7 +186,7 @@ test("humanizeOrigin and stillRunningLine", () => {
 	assert.equal(humanizeOrigin("foreground-adopted"), "ctrl+b (foreground adopt)");
 	assert.equal(
 		stillRunningLine(details({ kind: "still-running", elapsedSeconds: 30 }), 120),
-		"○ task-2 still running after 30s · sleep 120",
+		"⏾ task-2 still running after 30s",
 	);
 	assert.ok(visibleWidth(stillRunningLine(details({ kind: "still-running", elapsedSeconds: 30 }), 20)) <= 20);
 });

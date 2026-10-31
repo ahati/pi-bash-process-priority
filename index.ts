@@ -234,15 +234,46 @@ export default function (pi: ExtensionAPI) {
 			},
 		});
 
-		// Rebuild branch-aware state from prior tool results (§7.3).
+		// Rebuild branch-aware state from prior tool results and task notifications (§7.3).
 		try {
 			const seen = new Map<string, BgTask>();
 			for (const entry of ctx.sessionManager.getBranch()) {
-				const entryAny = entry as { type?: string; message?: { role?: string; details?: unknown } };
-				if (entryAny.type !== "message") continue;
-				const message = entryAny.message;
-				if (!message || message.role !== "toolResult") continue;
-				if (isBgTaskDetails(message.details)) seen.set(message.details.id, message.details);
+				const entryAny = entry as {
+					type?: string;
+					customType?: string;
+					data?: unknown;
+					message?: { role?: string; customType?: string; details?: unknown };
+				};
+				if (entryAny.type === "custom") {
+					const data = entryAny.data as { task?: unknown } | undefined;
+					if (data && isBgTaskDetails(data.task)) {
+						seen.set(data.task.id, data.task);
+					} else if (isBgTaskDetails(entryAny.data)) {
+						seen.set(entryAny.data.id, entryAny.data);
+					}
+					continue;
+				}
+				if (entryAny.type === "message") {
+					const message = entryAny.message;
+					if (!message) continue;
+					if (message.role === "toolResult") {
+						if (isBgTaskDetails(message.details)) {
+							seen.set(message.details.id, message.details);
+						} else if (
+							message.details &&
+							typeof message.details === "object" &&
+							isBgTaskDetails((message.details as { task?: unknown }).task)
+						) {
+							const t = (message.details as { task: BgTask }).task;
+							seen.set(t.id, t);
+						}
+					} else if (message.customType === "bg-task-notification") {
+						const details = message.details as { task?: unknown } | undefined;
+						if (details && isBgTaskDetails(details.task)) {
+							seen.set(details.task.id, details.task);
+						}
+					}
+				}
 			}
 			if (seen.size > 0) registry.rebuild([...seen.values()]);
 		} catch {
@@ -340,7 +371,7 @@ export default function (pi: ExtensionAPI) {
 						void openTasksPanel(ctxRef as ExtensionContext, registry as TaskManagerApi, keybindings, task, true);
 					};
 					editor.onKillTask = (task: BgTask) => {
-						void task;
+						void registry?.kill(task.id, "dock key kill");
 					};
 					return editor;
 				});
