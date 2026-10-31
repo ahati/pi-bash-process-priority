@@ -100,6 +100,12 @@ export interface TaskManagerOptions {
 	onTransition?: (kind: "spawned" | "adopted" | "terminal", task: BgTask) => void;
 	/** Background nice applied at spawn/adoption (default 19). */
 	bgNice?: number;
+	/** Absolute `nice` binary path; when set, spawn uses it instead of bare PATH lookup. */
+	niceBin?: string;
+	/** Absolute `ionice` binary path (spawn-time for bg tasks). */
+	ioniceBin?: string;
+	/** Absolute `renice` binary path (adoption-time). */
+	reniceBin?: string;
 	/** ionice class applied at spawn/adoption (0 disables; default 3). */
 	ioniceClass?: number;
 	/** One-shot still-running notice (§7.6), armed by notificationTimeoutSeconds. */

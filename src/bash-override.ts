@@ -25,6 +25,16 @@ import { Type, type Static } from "typebox";
 import { buildNiceCommand } from "./nice.ts";
 import type { BgTask, TaskManagerApi } from "./types.ts";
 
+/**
+ * Foreground spawn argv (PRD-001/PRD-004): absolute `nice` binary when probed
+ * and configured, otherwise the plain shell — never a bare `nice` name lookup,
+ * which fails with ENOENT under restricted PATHs.
+ */
+export function buildForegroundArgv(command: string, fgNice: number, niceBin?: string): string[] {
+	if (!niceBin || fgNice <= 0) return ["bash", "-c", command];
+	return [niceBin, "-n", String(fgNice), "bash", "-c", command];
+}
+
 export interface BashOverrideDeps {
 	registry: TaskManagerApi;
 	/** Foreground nice level (PRD-001 contract). */
@@ -35,6 +45,8 @@ export interface BashOverrideDeps {
 	logBytes?: number;
 	/** SIGTERM→SIGKILL grace for abort/timeout kills. Default 3000 ms. */
 	killGraceMs?: number;
+	/** Absolute `nice` binary (from probe). When absent, no nice prefix is applied. */
+	niceBin?: string;
 	/** Foreground timeout cap in seconds (§8 PI_BASH_FG_TIMEOUT_MAX). Default 60. */
 	fgTimeoutMax?: number;
 	/** Background timeout cap in seconds (§8 PI_BASH_TIMEOUT_BG_MAX). Default 300. */
@@ -190,7 +202,11 @@ export function normalizeBashArgs(raw: unknown): NormalizedBashArgs {
 
 	const str = (key: keyof NormalizedBashArgs): void => {
 		const value = args[key];
-		if (typeof value === "string" && value.trim() !== "") out[key] = value as never;
+		if (typeof value !== "string") return;
+		const trimmed = value.trim();
+		// Models sometimes emit literal "null"/"undefined" — treat as absent.
+		if (trimmed === "" || trimmed === "null" || trimmed === "undefined") return;
+		out[key] = value as never;
 	};
 
 	str("command");
@@ -330,12 +346,13 @@ export function createBackgroundAwareBashTool(cwd: string, deps: BashOverrideDep
 			const spawnCwd = cwdOverrides.get(currentToolCallId) ?? execCwd;
 			cwdOverrides.delete(currentToolCallId);
 
-			const wrapped = buildNiceCommand(command, deps.fgNice);
-			const argv = wrapped !== null ? ["nice", "-n", String(deps.fgNice), "bash", "-c", command] : ["bash", "-c", command];
+			const argv = buildForegroundArgv(command, deps.fgNice, deps.niceBin);
+			// Never let a restricted child env drop PATH — the shell still needs it.
+			const childEnv = { ...process.env, ...(env ?? {}) };
 			const child = spawn(argv[0], argv.slice(1), {
 				cwd: spawnCwd,
 				detached: process.platform !== "win32",
-				env: env ?? process.env,
+				env: childEnv,
 				stdio: ["ignore", "pipe", "pipe"],
 				windowsHide: true,
 			});

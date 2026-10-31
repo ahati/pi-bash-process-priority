@@ -10,7 +10,7 @@ import { closeSync, mkdirSync, openSync, writeSync } from "node:fs";
 import { open, stat } from "node:fs/promises";
 import { join } from "node:path";
 
-import { buildNiceCommand, escapeSingleQuotes } from "./nice.ts";
+import { escapeSingleQuotes } from "./nice.ts";
 import type {
 	BgTask,
 	ForegroundHandle,
@@ -82,14 +82,6 @@ function delayWait(closed: Promise<void>, ms: number): Promise<boolean> {
 	});
 }
 
-/** Compose the bg-priority argv: nice, then ionice when enabled. */
-export function buildBgCommand(command: string, bgNice: number, ioniceClass: number): string {
-	if (ioniceClass > 0) {
-		return `nice -n ${bgNice} ionice -c ${ioniceClass} bash -c '${escapeSingleQuotes(command)}'`;
-	}
-	return buildNiceCommand(command, bgNice) ?? command;
-}
-
 /**
  * Resolve `task-N`, a unique id prefix, or bare digits ("2" → "task-2").
  * Exact matches win; ambiguous/unknown ids throw.
@@ -118,6 +110,9 @@ export function resolveTaskId(tasks: BgTask[], idOrPrefix: string): BgTask {
 class TaskManager implements TaskManagerApi {
 	private readonly options: TaskManagerOptions;
 	private readonly changeListeners = new Set<() => void>();
+	private readonly niceBin?: string;
+	private readonly ioniceBin?: string;
+	private readonly reniceBin?: string;
 	private readonly logDir: string;
 	private readonly killGraceMs: number;
 	private readonly logBytes: number;
@@ -129,6 +124,9 @@ class TaskManager implements TaskManagerApi {
 
 	constructor(options: TaskManagerOptions) {
 		this.options = options;
+		this.niceBin = options.niceBin;
+		this.ioniceBin = options.ioniceBin;
+		this.reniceBin = options.reniceBin;
 		this.logDir = options.logDir;
 		this.killGraceMs = Math.max(0, Math.floor(options.killGraceMs));
 		this.logBytes = Math.max(1024, Math.floor(options.logBytes));
@@ -146,7 +144,7 @@ class TaskManager implements TaskManagerApi {
 			pgid: null,
 			startedAt: Date.now(),
 		});
-		const wrapped = buildBgCommand(command, this.bgNice, this.ioniceClass);
+		const wrapped = this.buildBgCommandAbs(command);
 
 		return new Promise<BgTask>((resolve, reject) => {
 			let spawned = false;
@@ -490,6 +488,16 @@ class TaskManager implements TaskManagerApi {
 		rec.stillTimer.unref?.();
 	}
 
+	/** Wrap with the priority prefix using the probed absolute binary paths. */
+	private buildBgCommandAbs(command: string): string {
+		return buildBgCommandAbs(command, {
+			niceBin: this.niceBin,
+			bgNice: this.bgNice,
+			ioniceBin: this.ioniceBin,
+			ioniceClass: this.ioniceClass,
+		});
+	}
+
 	/** Hard wall-clock limit: kill the task after `seconds` (PRD-004 §4.1). */
 	private armTimeout(rec: TaskRecord, seconds?: number): void {
 		if (seconds === undefined || !Number.isFinite(seconds) || seconds <= 0) return;
@@ -577,49 +585,20 @@ class TaskManager implements TaskManagerApi {
 	}
 
 	private applyAdoptedPriority(rec: TaskRecord): void {
-		const pgid = rec.task.pgid;
+		if (!this.reniceBin && !this.ioniceBin) return;
 		const pid = rec.task.pid;
-		if (pgid !== null) {
-			try {
-				execFile(
-					"renice",
-					["-n", String(this.bgNice), "-g", String(pgid)],
-					{ timeout: PRIORITY_TIMEOUT_MS },
-					(error) => {
-						if (error) {
-							this.appendLog(
-								rec,
-								`[priority] renice -n ${this.bgNice} -g ${pgid} failed: ${errorText(error)}\n`,
-							);
-						}
-					},
-				).on("error", (error) => {
-					this.appendLog(rec, `[priority] renice failed: ${errorText(error)}\n`);
-				});
-			} catch (error) {
-				this.appendLog(rec, `[priority] renice failed: ${errorText(error)}\n`);
+		if (!pid) return;
+		try {
+			if (this.reniceBin) {
+				const child = spawn(this.reniceBin, ["-n", String(this.bgNice), "-g", String(rec.task.pgid ?? pid)], { stdio: "ignore" });
+				child.on("error", () => this.appendLog(rec, `[priority] renice unavailable — kept current nice level\n`));
 			}
-		}
-		if (this.ioniceClass > 0 && pid !== null) {
-			try {
-				execFile(
-					"ionice",
-					["-c", String(this.ioniceClass), "-p", String(pid)],
-					{ timeout: PRIORITY_TIMEOUT_MS },
-					(error) => {
-						if (error) {
-							this.appendLog(
-								rec,
-								`[priority] ionice -c ${this.ioniceClass} -p ${pid} failed: ${errorText(error)}\n`,
-							);
-						}
-					},
-				).on("error", (error) => {
-					this.appendLog(rec, `[priority] ionice failed: ${errorText(error)}\n`);
-				});
-			} catch (error) {
-				this.appendLog(rec, `[priority] ionice failed: ${errorText(error)}\n`);
+			if (this.ioniceBin && this.ioniceClass > 0) {
+				const child2 = spawn(this.ioniceBin, ["-c", String(this.ioniceClass), "-p", String(pid)], { stdio: "ignore" });
+				child2.on("error", () => this.appendLog(rec, `[priority] ionice unavailable — kept current IO class\n`));
 			}
+		} catch (error) {
+			this.appendLog(rec, `[priority] ${(error as Error).message}\n`);
 		}
 	}
 
@@ -668,6 +647,27 @@ class TaskManager implements TaskManagerApi {
 		this.changeListeners.add(listener);
 		return () => this.changeListeners.delete(listener);
 	}
+}
+
+
+/**
+ * Build the background spawn script (PRD-004 §7.4): the command is wrapped as
+ * `bash -c '<command>'` (single-quote escaped) and — when the probed absolute
+ * `nice` binary is available — prefixed with `nice -n <level>` (and
+ * `ionice -c <class>`). Without a nice binary the plain wrapper is returned
+ * (fail-open priority, PRD-001 G4).
+ */
+export function buildBgCommandAbs(
+	command: string,
+	priority: { niceBin?: string; bgNice: number; ioniceBin?: string; ioniceClass: number },
+): string {
+	const inner = `bash -c '${escapeSingleQuotes(command)}'`;
+	if (!priority.niceBin) return inner;
+	const prefix = [priority.niceBin, "-n", String(priority.bgNice)];
+	if (priority.ioniceClass > 0 && priority.ioniceBin) {
+		prefix.push(priority.ioniceBin, "-c", String(priority.ioniceClass));
+	}
+	return `${prefix.join(" ")} ${inner}`;
 }
 
 export function createTaskManager(options: TaskManagerOptions): TaskManagerApi {

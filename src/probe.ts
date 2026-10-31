@@ -126,3 +126,21 @@ export function probeIonice(ioniceClass: number): Promise<boolean> {
 		}
 	});
 }
+
+/** Resolve a binary's absolute path via `which`; undefined when not found. */
+export function resolveBinPath(name: string): Promise<string | undefined> {
+	return new Promise((resolve) => {
+		try {
+			execFile("which", [name], { timeout: PROBE_TIMEOUT_MS }, (error, stdout) => {
+				if (error) {
+					resolve(undefined);
+					return;
+				}
+				const p = stdout.trim().split("\n")[0]?.trim();
+				resolve(p && p.startsWith("/") ? p : undefined);
+			});
+		} catch {
+			resolve(undefined);
+		}
+	});
+}
