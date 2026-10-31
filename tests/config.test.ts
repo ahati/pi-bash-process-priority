@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 
 import {
 	DEFAULT_BG_NICE,
+	DEFAULT_BG_TIMEOUT_MAX,
 	DEFAULT_FG_NICE,
+	DEFAULT_FG_TIMEOUT_MAX,
 	DEFAULT_IONICE_CLASS,
 	DEFAULT_KILL_GRACE_MS,
 	DEFAULT_LOG_BYTES,
@@ -23,6 +25,8 @@ test("resolveBgConfig: defaults", () => {
 		tasksMax: DEFAULT_TASKS_MAX,
 		killGraceMs: DEFAULT_KILL_GRACE_MS,
 		logBytes: DEFAULT_LOG_BYTES,
+		fgTimeoutMax: DEFAULT_FG_TIMEOUT_MAX,
+		bgTimeoutMax: DEFAULT_BG_TIMEOUT_MAX,
 	});
 	assert.equal(DEFAULT_FG_NICE, 10);
 	assert.equal(DEFAULT_BG_NICE, 19);
@@ -80,4 +84,13 @@ test("resolveLogDir: explicit or <cwd>/.pi/bg-tasks", () => {
 		resolveLogDir(resolveBgConfig({ PI_BG_TASK_LOG_DIR: "   " }, "linux"), "/work"),
 		"/work/.pi/bg-tasks",
 	);
+});
+
+test("resolveBgConfig: timeout caps parse and clamp to >= 1", () => {
+	assert.equal(resolveBgConfig({}, "linux").fgTimeoutMax, 60);
+	assert.equal(resolveBgConfig({}, "linux").bgTimeoutMax, 300);
+	assert.equal(resolveBgConfig({ PI_BASH_FG_TIMEOUT_MAX: "30" }, "linux").fgTimeoutMax, 30);
+	assert.equal(resolveBgConfig({ PI_BASH_TIMEOUT_BG_MAX: "120" }, "linux").bgTimeoutMax, 120);
+	assert.equal(resolveBgConfig({ PI_BASH_FG_TIMEOUT_MAX: "0" }, "linux").fgTimeoutMax, 1);
+	assert.equal(resolveBgConfig({ PI_BASH_FG_TIMEOUT_MAX: "abc" }, "linux").fgTimeoutMax, 60);
 });

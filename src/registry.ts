@@ -35,6 +35,7 @@ interface TaskRecord {
 	finalized: boolean;
 	killRequested: boolean;
 	stillTimer?: NodeJS.Timeout;
+	timeoutTimer?: NodeJS.Timeout;
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -169,7 +170,9 @@ class TaskManager implements TaskManagerApi {
 			child.once("spawn", () => {
 				spawned = true;
 				this.armStillRunning(rec, options.notificationTimeoutSeconds);
+				this.armTimeout(rec, options.timeoutSeconds);
 				this.emitChange();
+				this.options.onTransition?.("spawned", this.snapshot(rec));
 				resolve(this.snapshot(rec));
 			});
 			child.on("error", (error) => {
@@ -224,6 +227,7 @@ class TaskManager implements TaskManagerApi {
 		this.armStillRunning(rec, opts.notificationTimeoutSeconds);
 		this.applyAdoptedPriority(rec);
 		this.emitChange();
+		this.options.onTransition?.("adopted", this.snapshot(rec));
 		return this.snapshot(rec);
 	}
 
@@ -485,6 +489,18 @@ class TaskManager implements TaskManagerApi {
 		rec.stillTimer.unref?.();
 	}
 
+	/** Hard wall-clock limit: kill the task after `seconds` (PRD-004 §4.1). */
+	private armTimeout(rec: TaskRecord, seconds?: number): void {
+		if (seconds === undefined || !Number.isFinite(seconds) || seconds <= 0) return;
+		const capped = Math.max(1, Math.floor(seconds));
+		rec.timeoutTimer = setTimeout(() => {
+			rec.timeoutTimer = undefined;
+			if (rec.task.status !== "running") return;
+			void this.kill(rec.task.id, `timeout (${capped}s)`).catch(() => {});
+		}, capped * 1000);
+		rec.timeoutTimer.unref?.();
+	}
+
 	private clearStillTimer(rec: TaskRecord): void {
 		if (rec.stillTimer !== undefined) {
 			clearTimeout(rec.stillTimer);
@@ -500,6 +516,10 @@ class TaskManager implements TaskManagerApi {
 		if (rec.finalized) return;
 		rec.finalized = true;
 		this.clearStillTimer(rec);
+		if (rec.timeoutTimer !== undefined) {
+			clearTimeout(rec.timeoutTimer);
+			rec.timeoutTimer = undefined;
+		}
 
 		const task = rec.task;
 		task.endedAt = Date.now();
@@ -527,6 +547,7 @@ class TaskManager implements TaskManagerApi {
 		this.enforceEviction();
 
 		try {
+			this.options.onTransition?.("terminal", this.snapshot(rec));
 			this.options.onTerminal?.(this.snapshot(rec));
 		} catch {
 			// listener errors never affect the registry

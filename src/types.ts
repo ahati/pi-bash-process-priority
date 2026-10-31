@@ -92,6 +92,12 @@ export interface TaskManagerOptions {
 	 * turns this into the §7.6 notification + §7.10 renderer message.
 	 */
 	onTerminal?: (task: BgTask) => void;
+	/**
+	 * Fired on every registry transition (PRD-004 §6): "spawned" when a task
+	 * starts via run(), "adopted" when a foreground call is adopted, "terminal"
+	 * when it reaches a final state. Drives bg-task-state event entries.
+	 */
+	onTransition?: (kind: "spawned" | "adopted" | "terminal", task: BgTask) => void;
 	/** Background nice applied at spawn/adoption (default 19). */
 	bgNice?: number;
 	/** ionice class applied at spawn/adoption (0 disables; default 3). */
@@ -109,6 +115,12 @@ export interface RunOptions {
 	 * via the stillRunning callback below; the task keeps running regardless.
 	 */
 	notificationTimeoutSeconds?: number;
+	/**
+	 * Hard wall-clock limit: kill the task after this many seconds (§4.1 —
+	 * background commands may run up to PI_BASH_TIMEOUT_BG_MAX, default 300).
+	 * The task is killed with reason `timeout (<n>s)`.
+	 */
+	timeoutSeconds?: number;
 }
 
 export interface TaskManagerApi {
@@ -171,4 +183,8 @@ export interface BgConfig {
 	tasksMax: number;
 	killGraceMs: number;
 	logBytes: number;
+	/** Foreground timeout cap in seconds (PI_BASH_FG_TIMEOUT_MAX, default 60). */
+	fgTimeoutMax: number;
+	/** Background timeout cap in seconds (PI_BASH_TIMEOUT_BG_MAX, default 300). */
+	bgTimeoutMax: number;
 }

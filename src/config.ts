@@ -14,6 +14,8 @@ export const DEFAULT_IONICE_CLASS = 3; // idle; 0 disables ionice
 export const DEFAULT_TASKS_MAX = 100;
 export const DEFAULT_KILL_GRACE_MS = 3_000;
 export const DEFAULT_LOG_BYTES = 50_000;
+export const DEFAULT_FG_TIMEOUT_MAX = 60; // seconds (PRD-004 §4.1)
+export const DEFAULT_BG_TIMEOUT_MAX = 300; // seconds (PRD-004 §4.1)
 
 export type EnvLike = Record<string, string | undefined>;
 
@@ -44,6 +46,8 @@ export function resolveBgConfig(env: EnvLike, platform: NodeJS.Platform): BgConf
 		tasksMax: Math.max(1, parseIntEnv(env.PI_BG_TASKS_MAX, DEFAULT_TASKS_MAX)),
 		killGraceMs: Math.max(0, parseIntEnv(env.PI_BG_KILL_GRACE_MS, DEFAULT_KILL_GRACE_MS)),
 		logBytes: Math.max(1024, parseIntEnv(env.PI_BG_LOG_BYTES, DEFAULT_LOG_BYTES)),
+		fgTimeoutMax: Math.max(1, parseIntEnv(env.PI_BASH_FG_TIMEOUT_MAX, DEFAULT_FG_TIMEOUT_MAX)),
+		bgTimeoutMax: Math.max(1, parseIntEnv(env.PI_BASH_TIMEOUT_BG_MAX, DEFAULT_BG_TIMEOUT_MAX)),
 	};
 }
 

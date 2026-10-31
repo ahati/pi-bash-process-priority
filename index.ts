@@ -34,10 +34,10 @@ import { createTaskManager } from "./src/registry.ts";
 import {
 	createBackgroundAwareBashTool,
 	getForeground,
+	getSharedOperations,
 	requestBackground,
 	resetBashOverrideState,
 } from "./src/bash-override.ts";
-import { createBgTaskTool } from "./src/bg-task-tool.ts";
 import { DockController, installDock } from "./src/ui/dock.ts";
 import { installFooter } from "./src/ui/footer.ts";
 import { openTasksPanel } from "./src/ui/panel.ts";
@@ -100,6 +100,26 @@ export default function (pi: ExtensionAPI) {
 
 	// Registered once per extension runtime (not session-bound).
 	pi.registerMessageRenderer("bg-task-notification", renderBgNotification);
+
+	// PRD-004 §7 — priority transport: the hook's entire body routes RPC/!
+	// shell executions into the masked tool's operations (fg nice). No control
+	// logic, no parsing (G4). Inert until the override activates this session.
+	pi.on("user_bash", () => {
+		const operations = getSharedOperations();
+		return operations ? { operations } : undefined;
+	});
+
+	/** §6 — one structured entry per transition; RPC clients see entry_appended. */
+	const appendTaskState = (
+		kind: "spawned" | "adopted" | "terminal" | "still-running",
+		task: BgTask,
+	) => {
+		try {
+			pi.appendEntry("bg-task-state", { kind, task, timestamp: Date.now() });
+		} catch {
+			// Event emission never blocks the registry (PRD-004 FR-3).
+		}
+	};
 
 	// Legacy PRD-001 rewrite: only while the override is NOT active.
 	pi.on("tool_call", (event) => {
@@ -164,7 +184,9 @@ export default function (pi: ExtensionAPI) {
 			onChange: () => {
 				// Dock/footer refresh themselves via registry listeners installed below.
 			},
+			onTransition: (kind, task) => appendTaskState(kind, task),
 			onTerminal: (task) => {
+				appendTaskState("terminal", task);
 				const details: BgNotificationDetails = {
 					kind: "terminal",
 					task,
@@ -181,6 +203,7 @@ export default function (pi: ExtensionAPI) {
 				);
 			},
 			onStillRunning: (task, elapsedSeconds) => {
+				appendTaskState("still-running", task);
 				const details: BgNotificationDetails = {
 					kind: "still-running",
 					task,
@@ -217,9 +240,15 @@ export default function (pi: ExtensionAPI) {
 		// Take over the built-in bash tool + register bg_task (§7.1, §7.5).
 		try {
 			pi.registerTool(
-				createBackgroundAwareBashTool(ctx.cwd, { registry, fgNice, logBytes: bg.logBytes, killGraceMs: bg.killGraceMs }),
+				createBackgroundAwareBashTool(ctx.cwd, {
+					registry,
+					fgNice,
+					logBytes: bg.logBytes,
+					killGraceMs: bg.killGraceMs,
+					fgTimeoutMax: bg.fgTimeoutMax,
+					bgTimeoutMax: bg.bgTimeoutMax,
+				}),
 			);
-			pi.registerTool(createBgTaskTool({ registry, logDir: resolveLogDir(bg, ctx.cwd) }));
 			overrideActive = true;
 		} catch (error) {
 			// Fail back to the PRD-001 hook path entirely.

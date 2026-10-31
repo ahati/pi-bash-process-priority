@@ -20,6 +20,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { constants as osConstants } from "node:os";
 import { createBashToolDefinition, type BashOperations, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth } from "@earendil-works/pi-tui";
+import { Type, type Static } from "typebox";
 import { buildNiceCommand } from "./nice.ts";
 import type { BgTask, TaskManagerApi } from "./types.ts";
 
@@ -33,6 +35,10 @@ export interface BashOverrideDeps {
 	logBytes?: number;
 	/** SIGTERM→SIGKILL grace for abort/timeout kills. Default 3000 ms. */
 	killGraceMs?: number;
+	/** Foreground timeout cap in seconds (§8 PI_BASH_FG_TIMEOUT_MAX). Default 60. */
+	fgTimeoutMax?: number;
+	/** Background timeout cap in seconds (§8 PI_BASH_TIMEOUT_BG_MAX). Default 300. */
+	bgTimeoutMax?: number;
 }
 
 const DEFAULT_LOG_BYTES = 50_000;
@@ -61,6 +67,89 @@ interface ForegroundSlot {
 
 const slots = new Map<string, ForegroundSlot>();
 const pendingBackground = new Map<string, (task: BgTask) => void>();
+/** Per-call working-directory override (PRD-004 §4.1 `cwd`), consumed by exec. */
+const cwdOverrides = new Map<string, string>();
+/**
+ * The masked tool's executor, shared with the bash execution hook (PRD-004
+ * §7 priority transport). Set by createBackgroundAwareBashTool.
+ */
+let sharedOperations: BashOperations | undefined;
+
+/** PRD-004 §7 — the operations behind the masked tool (undefined while inactive). */
+export function getSharedOperations(): BashOperations | undefined {
+	return sharedOperations;
+}
+
+export type TaskAction = "list" | "status" | "kill" | "input" | "adopt";
+
+export interface TaskActionParams {
+	taskAction: TaskAction;
+	taskId?: string;
+	input?: string;
+}
+
+export interface TaskActionResult {
+	text: string;
+	details?: BgTask;
+	isError?: boolean;
+}
+
+/** Local "HH:MM:SS" for task lines. */
+function clock(ms: number): string {
+	const d = new Date(ms);
+	const pad = (n: number) => String(n).padStart(2, "0");
+	return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+function taskLine(task: BgTask): string {
+	return `${task.id}  ${task.command}  ${task.status}  (started ${clock(task.startedAt)})`;
+}
+
+/**
+ * Management verbs on the Bash surface (PRD-004 §4.1 `taskAction`).
+ * Pure delegation to the registry — no process work here.
+ */
+export async function runTaskAction(
+	registry: TaskManagerApi,
+	params: TaskActionParams,
+): Promise<TaskActionResult> {
+	const { taskAction } = params;
+
+	if (taskAction === "list") {
+		const tasks = registry.list();
+		if (tasks.length === 0) return { text: "No background tasks." };
+		return { text: tasks.map(taskLine).join("\n") };
+	}
+
+	if (taskAction === "adopt") {
+		const foreground = getForeground();
+		if (!foreground) return { text: "No foreground command is currently running.", isError: true };
+		const task = requestBackground(foreground.toolCallId);
+		if (!task) return { text: "No foreground command is currently running.", isError: true };
+		return {
+			text: `Moved to background: ${task.id} (${task.command})\nOutput: ${task.logPath}`,
+			details: task,
+		};
+	}
+
+	const target = params.taskId;
+	if (!target) return { text: `Missing required parameter: taskId (for "${taskAction}").`, isError: true };
+	const task = registry.get(target);
+	if (!task) return { text: `Unknown task: ${target}.`, isError: true };
+
+	if (taskAction === "status") {
+		const log = await registry.logs(task.id);
+		return { text: `${taskLine(task)}\n\n${log}`, details: task };
+	}
+	if (taskAction === "kill") {
+		return { text: await registry.kill(task.id), details: task };
+	}
+	// taskAction === "input"
+	if (params.input === undefined) {
+		return { text: `Missing required parameter: input (for "input").`, isError: true };
+	}
+	return { text: registry.sendInput(task.id, params.input), details: task };
+}
 
 /** §4.3 wording — exact. */
 export function formatBackgroundToolResult(task: BgTask): string {
@@ -69,6 +158,22 @@ export function formatBackgroundToolResult(task: BgTask): string {
 		`Output: ${task.logPath}`,
 		"Do not poll. You will be notified when it finishes.",
 	].join("\n");
+}
+
+/**
+ * Drop a redundant leading `cd <tool-cwd> &&` (PRD-004 §4.1): models often
+ * emit `cd <current-dir-full-path> && …` although the tool already runs in
+ * that directory. Only an exact match against `cwd` (after unquoting and
+ * trailing-slash normalization) is stripped — any other `cd` is preserved.
+ */
+export function stripCdPrefix(command: string, cwd: string): string {
+	const match = /^\s*cd\s+(?:"([^"]*)"|'([^']*)'|(\S+))(\s*&&)/.exec(command);
+	if (!match) return command;
+	const raw = match[1] ?? match[2] ?? match[3] ?? "";
+	const normalized = raw.replace(/\/+$/, "");
+	const target = cwd.replace(/\/+$/, "");
+	if (normalized !== target) return command;
+	return command.slice(match.index + match[0].length).replace(/^\s*/, "");
 }
 
 /**
@@ -163,10 +268,14 @@ export function createBackgroundAwareBashTool(cwd: string, deps: BashOverrideDep
 			const timeoutMs = resolveTimeoutMs(timeout);
 			if (signal?.aborted) return Promise.reject(new Error("aborted"));
 
+			// PRD-004 §4.1: per-call `cwd` parameter overrides the spawn directory.
+			const spawnCwd = cwdOverrides.get(currentToolCallId) ?? execCwd;
+			cwdOverrides.delete(currentToolCallId);
+
 			const wrapped = buildNiceCommand(command, deps.fgNice);
 			const argv = wrapped !== null ? ["nice", "-n", String(deps.fgNice), "bash", "-c", command] : ["bash", "-c", command];
 			const child = spawn(argv[0], argv.slice(1), {
-				cwd: execCwd,
+				cwd: spawnCwd,
 				detached: process.platform !== "win32",
 				env: env ?? process.env,
 				stdio: ["ignore", "pipe", "pipe"],
@@ -220,7 +329,7 @@ export function createBackgroundAwareBashTool(cwd: string, deps: BashOverrideDep
 					child,
 					pgid,
 					command,
-					cwd: execCwd,
+					cwd: spawnCwd,
 					startedAt: Date.now(),
 					tail,
 					tailBytes,
@@ -280,18 +389,123 @@ export function createBackgroundAwareBashTool(cwd: string, deps: BashOverrideDep
 	};
 
 	const builtin = createBashToolDefinition(cwd, { operations });
+	sharedOperations = operations;
 
 	// The in-flight toolCallId is set by ourExecute immediately around the
 	// delegated built-in call; exec runs inside that call.
 	let currentToolCallId = "";
 
+	const fgCap = Math.max(1, deps.fgTimeoutMax ?? 60);
+	const bgCap = Math.max(1, deps.bgTimeoutMax ?? 300);
+
+	// PRD-004 §4.1: extended schema — execution (command/timeout/background/
+	// taskName/cwd) and management (taskAction/taskId/input) in one tool.
+	const bashParams = Type.Object({
+		command: Type.Optional(
+			Type.String({
+				description:
+					"The exact command line to execute. A leading `cd <current-directory> &&` for the current directory is dropped automatically. Required unless taskAction is set.",
+			}),
+		),
+		timeout: Type.Optional(
+			Type.Number({
+				description: `Optional. Max seconds to run. Foreground commands are clamped to ${fgCap}s; background tasks to ${bgCap}s.`,
+			}),
+		),
+		background: Type.Optional(
+			Type.Boolean({
+				description:
+					"Run as a background task (task-N) at low priority: returns immediately, notifies on completion. Use for dev servers, watchers, long test suites. Never poll — you will be notified when it finishes.",
+			}),
+		),
+		taskName: Type.Optional(
+			Type.String({ description: "Optional short name for the background task (shown in the task list and notifications)." }),
+		),
+		cwd: Type.Optional(
+			Type.String({ description: "Optional working directory. Defaults to the current execution directory." }),
+		),
+		taskAction: Type.Optional(
+			Type.Union(
+				[
+					Type.Literal("list"),
+					Type.Literal("status"),
+					Type.Literal("kill"),
+					Type.Literal("input"),
+					Type.Literal("adopt"),
+				],
+				{
+					description:
+						"Manage background tasks instead of executing a command: 'list' reports tasks (running first), " +
+						"'status' shows a task's state plus output tail, 'kill' terminates a task, 'input' writes to a task's " +
+						"stdin, 'adopt' moves the currently running foreground command into a background task. " +
+						"When set, all execution parameters are ignored.",
+				},
+			),
+		),
+		taskId: Type.Optional(Type.String({ description: 'Task id such as "task-7" (required for status/kill/input).' })),
+		input: Type.Optional(Type.String({ description: "Text to write to the task stdin (required with taskAction 'input')." })),
+	});
+	type BashParams = Static<typeof bashParams>;
+
+	const amendedDescription = [
+		builtin.description,
+		"",
+		"Execution modes:",
+		`- Foreground (default): output streams back; a command may run at most ${fgCap}s (larger timeout values are clamped).`,
+		`- background=true: the command runs as a background task (task-N) at low priority and the call returns immediately; background tasks may run at most ${bgCap}s. Use taskName to label the task. Do not poll — you will be notified when it finishes.`,
+		"- cwd: optional working directory (defaults to the current execution directory); a leading `cd <current-directory> &&` is dropped automatically.",
+	].join("\n");
+
 	const ourExecute = async (
 		toolCallId: string,
-		params: { command: string; timeout?: number },
+		params: BashParams,
 		signal: AbortSignal | undefined,
 		onUpdate: Parameters<typeof builtin.execute>[3],
 		ctx: Parameters<typeof builtin.execute>[4],
 	): Promise<unknown> => {
+		// ---- management branch (PRD-004 §4.1 taskAction) ----------------
+		if (params.taskAction) {
+			const outcome = await runTaskAction(deps.registry, {
+				taskAction: params.taskAction,
+				taskId: params.taskId,
+				input: params.input,
+			});
+			return {
+				content: [{ type: "text", text: outcome.text }],
+				details: outcome.details,
+				isError: outcome.isError === true,
+			};
+		}
+		if (params.command === undefined || params.command.trim() === "") {
+			return {
+				content: [{ type: "text", text: "Missing required parameter: command (or set taskAction)." }],
+				isError: true,
+			};
+		}
+
+		// PRD-004 §4.1: drop a redundant `cd <current-dir> &&` and resolve cwd.
+		const effectiveCwd = params.cwd?.trim() ? params.cwd : cwd;
+		const command = stripCdPrefix(params.command, effectiveCwd);
+
+		// ---- background branch (PRD-004 §4.1) ---------------------------
+		if (params.background) {
+			const timeoutSeconds =
+				params.timeout === undefined ? undefined : Math.min(Math.max(1, params.timeout), bgCap);
+			const task = await deps.registry.run(command, effectiveCwd, {
+				name: params.taskName,
+				timeoutSeconds,
+			});
+			return {
+				content: [{ type: "text", text: formatBackgroundToolResult(task) }],
+				details: task,
+				isError: false,
+			};
+		}
+
+		// ---- foreground branch: clamped timeout, cwd override, race ------
+		const clampedTimeout = params.timeout === undefined ? undefined : Math.min(Math.max(1, params.timeout), fgCap);
+		if (effectiveCwd !== cwd) cwdOverrides.set(toolCallId, effectiveCwd);
+
 		let resolveBg!: (task: BgTask) => void;
 		const bgPromise = new Promise<{ __bgTask: BgTask }>((resolve) => {
 			resolveBg = (task) => resolve({ __bgTask: task });
@@ -299,7 +513,8 @@ export function createBackgroundAwareBashTool(cwd: string, deps: BashOverrideDep
 		pendingBackground.set(toolCallId, (task) => resolveBg(task));
 		currentToolCallId = toolCallId;
 
-		const builtinRun = builtin.execute(toolCallId, params, signal, onUpdate, ctx);
+		const builtinParams = { command, timeout: clampedTimeout };
+		const builtinRun = builtin.execute(toolCallId, builtinParams, signal, onUpdate, ctx);
 		// Defuse the eventual loser regardless of who wins the race.
 		void builtinRun.catch(() => {});
 		try {
@@ -320,5 +535,49 @@ export function createBackgroundAwareBashTool(cwd: string, deps: BashOverrideDep
 		}
 	};
 
-	return { ...builtin, execute: ourExecute as typeof builtin.execute } as unknown as ToolDefinition;
+	// Expanded (ctrl+o) view shows the resolved working directory (PRD-004 §4.1).
+	const baseRenderCall = builtin.renderCall;
+	const renderCall = (
+		args: BashParams,
+		theme: Parameters<NonNullable<typeof builtin.renderCall>>[1],
+		context: Parameters<NonNullable<typeof builtin.renderCall>>[2],
+	) => {
+		const managementLine = args.taskAction
+			? [truncateToWidth(theme.fg("accent", "bash") + theme.fg("dim", ` tasks ${args.taskAction}${args.taskId ? ` ${args.taskId}` : ""}`), context.expanded ? Number.MAX_SAFE_INTEGER : 200)]
+			: undefined;
+		const base = managementLine ? undefined : baseRenderCall?.(args as { command: string }, theme, context);
+		if (!base) {
+			const lines = managementLine ?? [];
+			return {
+				invalidate() {},
+				render(width: number): string[] {
+					const out = context.expanded && !managementLine && args.cwd?.trim() ? lines : lines;
+					if (!managementLine) {
+						const effectiveCwd = args.cwd?.trim() ? args.cwd : context.cwd || cwd;
+						if (context.expanded) out.push(truncateToWidth(theme.fg("dim", `cwd: ${effectiveCwd}`), width));
+					}
+					return out.map((line) => truncateToWidth(line, width));
+				},
+			};
+		}
+		const effectiveCwd = args.cwd?.trim() ? args.cwd : context.cwd || cwd;
+		return {
+			invalidate() {
+				base.invalidate?.();
+			},
+			render(width: number): string[] {
+				const lines = base.render(width);
+				if (!context.expanded) return lines;
+				return [...lines, truncateToWidth(theme.fg("dim", `cwd: ${effectiveCwd}`), width)];
+			},
+		};
+	};
+
+	return {
+		...builtin,
+		parameters: bashParams,
+		description: amendedDescription,
+		renderCall,
+		execute: ourExecute,
+	} as unknown as ToolDefinition;
 }

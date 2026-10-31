@@ -3,7 +3,7 @@
 | | |
 | --- | --- |
 | **Status** | Draft — ready for review |
-| **Version** | 3.0 (supersedes the sentinel-protocol 1.0 and tool-mediated 2.0 drafts) |
+| **Version** | 3.1 (3.0 + management folded into the `bash` tool; timeout caps; `cwd` param) |
 | **Date** | 2026-10-31 |
 | **Owner** | pi-bash-process-priority maintainers |
 | **Depends on** | [PRD-003](background-task-design-and-ui.md) (registry, bash override, ctrl+b adoption; §7.5 amended by this PRD) |
@@ -17,10 +17,10 @@
 
 One extension owns everything shell-shaped:
 
-1. **The `bash` tool is overridden** (built-in masked, PRD-003 §7.1) and gains one new parameter: **`background: boolean`**. The model starts long-running work by setting the flag on the tool it already uses — no second "run" verb, no mode switch:
+1. **The `bash` tool is overridden** (built-in masked, PRD-003 §7.1) and gains the new parameters: **`background: boolean`** (start as task), **`taskName`**, **`cwd`**, and **`taskAction`** (management: list / status / kill / input / adopt — folded into the tool; there is no second tool. Deliberate deviation: agy parity is a **UI** goal, not a tool-surface goal):
    - `background: false` (default) → byte-identical to pi's bash: foreground, streamed, `ctrl+b`-adoptable, fg nice.
    - `background: true` → spawns immediately as `task-N` at **bg** nice + ionice, returns the standard task notice, wakes the agent on completion.
-2. **`bg_task` shrinks to management** — `list | status | kill | input | adopt` — no run verb. `adopt` is the steer/RPC trigger for `ctrl+b`.
+2. **Timeout caps, configurable**: foreground commands at most `PI_BASH_FG_TIMEOUT_MAX` (default **60 s**), background tasks at most `PI_BASH_TIMEOUT_BG_MAX` (default **300 s**); model-supplied values are clamped and the caps are stated in the tool description. A background timeout kills the task (`reason: timeout (<n>s)`).
 3. **RPC inspection without hooks**: every task transition is appended as a structured `bg-task-state` entry → `entry_appended` events, never in model context.
 4. **Priority everywhere**: the bash execution hook is reduced to a transport (`return { operations }` — the masked tool's own executor), so RPC-initiated shell commands also run at fg nice. PRD-001's "tool calls only" scope is amended: **every agent shell execution is niced**.
 5. **No control hooks**: the hook parses nothing and decides nothing. Control is tool-mediated (`bg_task`), invoked by the model on its own initiative or when an RPC client steers it.
@@ -53,21 +53,25 @@ Constraints (verified, pi 1.4.0): RPC `bash` never passes through the registered
 - **N3** — `/tasks` subactions (TUI-only per product decision).
 - **N4** — Subagent aggregation (PRD-005; the event schema reserves attribution fields).
 
-## 4. Tool surface (amends PRD-003 §7.5)
+## 4. Tool surface (amends PRD-003 §7.5) — one tool
 
 ### 4.1 `bash` (overridden, masked built-in)
 
 ```ts
 {
-  command: string                      // unchanged
-  timeout?: number                     // unchanged (foreground only)
-  background?: boolean                 // NEW — default false
-  taskName?: string                    // NEW, optional — human-readable task name
+  command: string            // required unless taskAction is set
+  timeout?: number           // clamped: fg ≤ fgTimeoutMax, bg ≤ bgTimeoutMax
+  background?: boolean       // default false — run as task-N at bg priority
+  taskName?: string          // optional label for the task
+  cwd?: string               // optional working directory (default: pi's execution dir)
+  taskAction?: "list" | "status" | "kill" | "input" | "adopt"
+  taskId?: string            // required for status/kill/input
+  input?: string             // required for input
 }
 ```
 
-- **Foreground** (`background` unset/false): unchanged pipeline — fg nice at spawn, streaming, abort kill-tree, timeout, truncation (PRD-003 §7.1 guarantees).
-- **Background** (`background: true`): registry spawn at bg priority (§7.3 of PRD-003); `timeout` is rejected up front (`"timeout does not apply to background commands"`); response is the standard task notice:
+- **Foreground** (`background` unset/false): unchanged pipeline — fg nice at spawn, streaming, abort kill-tree, timeout clamped to `fgTimeoutMax`, truncation (PRD-003 §7.1 guarantees).
+- **Background** (`background: true`): registry spawn at bg priority; `timeout` clamped to `bgTimeoutMax` and enforced by the registry (kill with `reason: timeout (<n>s)`); response is the standard task notice:
 
   ```
   Tool is running as a background task with task id: task-7
@@ -75,18 +79,17 @@ Constraints (verified, pi 1.4.0): RPC `bash` never passes through the registered
   Do not poll. You will be notified when it finishes.
   ```
 
-- `renderCall` shows the flag distinctly (e.g. `○ Bash(sleep 120) ⏾ background`), so the transcript reads like agy's task rows.
-- The tool description gains one sentence: *"Set background=true for long-running commands (dev servers, watchers, long tests); you will be notified when they finish — never poll."* The async-termination guideline from PRD-003 remains.
+- **Management** (`taskAction` set): takes precedence — `command`/execution params are ignored. Responses reuse the established wordings (`No background tasks.`, `Unknown task: …`, `Killed task-7 (…)`, `No foreground command is currently running.`, `Moved to background: task-7 (…)`); `details` carries the affected `BgTask`.
+- **`cwd`**: spawn-level working directory, defaults to pi's execution directory. A leading `cd <current-directory> &&` (any quoting, trailing-slash tolerant, exact match) is **dropped automatically** — other `cd`s are preserved.
+- **Rendering**: the expanded (`ctrl+o`) call view shows a `cwd: <path>` line; `taskAction` calls render as `bash tasks <action> [taskId]` instead of a command line.
+- The tool description documents the modes, the timeout caps (with the configured numbers), the `cwd` default, and the `cd`-drop behavior.
 
-### 4.2 `bg_task` (management-only)
+Configuration:
 
-```
-action: "list" | "status" | "kill" | "input" | "adopt"
-taskId?, input?, name?          // as before
-```
-
-- The `run` action is **removed** (its job moved to the `background` parameter); `adopt` arrives from this PRD (§5).
-- `promptSnippet`: "Inspect and manage this conversation's background tasks (task-N)."
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `PI_BASH_FG_TIMEOUT_MAX` | `60` | Foreground timeout ceiling (seconds); model values are clamped. |
+| `PI_BASH_TIMEOUT_BG_MAX` | `300` | Background timeout ceiling (seconds); enforced by a registry kill. |
 
 ## 5. `adopt` — the control verb
 
@@ -138,12 +141,13 @@ pi.on("user_bash", () => ({ operations: sharedOperations }));
 | --- | --- |
 | FR-1 | `bash` accepts `background?: boolean` and `taskName?: string`; `background: true` spawns via the registry (bg priority), returns the §4.1 notice, and never blocks on the child. |
 | FR-2 | Foreground behavior (default) is byte-identical to PRD-003's masked tool (streaming, exit codes, timeout, abort kill-tree, truncation). |
-| FR-3 | `timeout` + `background: true` is a parameter-validation error before spawn. |
-| FR-4 | `bg_task` loses `run` and gains `adopt`; all management actions keep their PRD-003 semantics and wordings. |
+| FR-3 | `timeout` values are clamped per mode (fg ≤ `PI_BASH_FG_TIMEOUT_MAX`, bg ≤ `PI_BASH_TIMEOUT_BG_MAX`); a background timeout kills the task with `reason: timeout (<n>s)`. |
+| FR-4 | There is no `bg_task` tool: `taskAction` on `bash` implements list / status / kill / input / adopt with the PRD-003 wordings; when set it takes precedence over execution parameters. |
 | FR-5 | Every registry transition appends exactly one `bg-task-state` entry per §6; append failures are logged once and never block the registry. |
 | FR-6 | The bash execution hook's entire body is the §7 return; with PRD-003 disabled it returns `undefined`. No other hook statements (G4) — verified by test. |
-| FR-7 | `renderCall` distinguishes background calls (§4.1); dock/`/tasks` render parameter-started tasks identically to `ctrl+b`-adopted ones (origin `bg_task` vs `foreground-adopted` preserved in `details`). |
+| FR-7 | `renderCall` distinguishes background calls; the expanded (`ctrl+o`) view shows the resolved `cwd`; `taskAction` calls render as management lines; dock/`/tasks` render parameter-started tasks identically to adopted ones (origin preserved in `details`). |
 | FR-8 | All new paths no-op under `PI_BG_TASKS_DISABLE=1`. |
+| FR-9 | A leading `cd <current-directory> &&` (exact match after unquoting and trailing-slash normalization) is stripped from `command` before execution; all other commands pass through untouched. |
 
 ## 10. Security considerations
 
