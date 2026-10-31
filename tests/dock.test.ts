@@ -39,10 +39,17 @@ function makeRegistry(overrides: Partial<Parameters<typeof createTaskManager>[0]
 }
 
 /** Resolve the latest installed component factory and render it. */
-function latestLines(calls: WidgetCall[]): string[] | undefined {
+function latestLines(calls: WidgetCall[], width = 120): string[] | undefined {
 	const last = [...calls].reverse().find((call) => call.content !== undefined);
-	if (!last || !Array.isArray(last.content)) return undefined;
-	return last.content as string[];
+	if (!last) return undefined;
+	if (Array.isArray(last.content)) return last.content as string[];
+	if (typeof last.content === 'function') {
+		const theme = { fg: (_c: string, t: string) => t, bold: (t: string) => t };
+		const tui = { requestRender() {} };
+		const component = (last.content as Function)(tui, theme);
+		return component.render(width);
+	}
+	return undefined;
 }
 
 function lastCall(calls: WidgetCall[]): WidgetCall | undefined {
@@ -204,7 +211,7 @@ test("installDock: completed tasks leave the dock; empty \u2192 widget hidden", 
 		const task = await reg.run("sleep 30", "/tmp");
 
 		// A factory install happened for the running task.
-		assert.ok(calls.some((call) => Array.isArray(call.content)), "dock should install on spawn");
+		assert.ok(calls.some((call) => typeof call.content === "function"), "dock should install on spawn");
 
 		// Deterministic terminal transition (no natural-exit timing race).
 		await reg.kill(task.id);
