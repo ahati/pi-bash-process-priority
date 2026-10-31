@@ -6,9 +6,10 @@
  * resize dynamically with the terminal. The 1-second ticker triggers
  * `requestRender()` so the elapsed time ticks live.
  */
+import { existsSync, readFileSync } from "node:fs";
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import type { BgTask, TaskManagerApi } from "../types.ts";
-import { formatClock, formatDuration } from "./format.ts";
+import { detailLines, formatClock, formatDuration } from "./format.ts";
 import { debugLog } from "../debug.ts";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import type { Component, TUI } from "@earendil-works/pi-tui";
@@ -20,21 +21,36 @@ const RULE_CHAR = "\u2500";
 export interface DockOptions {
 	/** Color function for the dock's bottom rule (matches the editor frame). */
 	borderColor?: (text: string) => string;
+	/** Fallback accessor for the TUI instance if capturedTui is not yet set. */
+	getTui?: () => TUI | undefined;
 }
 
 export class DockController {
 	private readonly getTasks: () => BgTask[];
 	private index = 0;
 	private active = false;
+	private view: "list" | "detail" = "list";
+	private detailTask: BgTask | undefined;
+	private detailScroll = 0;
+	private detailFollow = true;
+	private detailMaxScroll = 0;
 
 	constructor(getTasks: () => BgTask[]) {
 		this.getTasks = getTasks;
 	}
 
 	enterDock(): boolean {
-		if (this.getTasks().length === 0) { this.active = false; this.index = 0; return false; }
+		if (this.getTasks().length === 0 && !this.detailTask) {
+			this.active = false;
+			this.index = 0;
+			return false;
+		}
 		this.active = true;
-		this.index = 0;
+		if (this.view !== "detail") {
+			this.view = "list";
+			this.detailTask = undefined;
+			this.index = 0;
+		}
 		return true;
 	}
 
@@ -50,10 +66,73 @@ export class DockController {
 		return this.getTasks()[this.index];
 	}
 
-	exitDock(): void { this.active = false; this.index = 0; }
+	openDetail(task?: BgTask): void {
+		const t = task ?? this.selected();
+		if (!t) return;
+		this.active = true;
+		this.view = "detail";
+		this.detailTask = t;
+		this.detailScroll = 0;
+		this.detailFollow = false;
+	}
+
+	closeDetail(): void {
+		this.view = "list";
+		this.detailTask = undefined;
+		this.detailScroll = 0;
+		this.detailFollow = false;
+	}
+
+	isDetail(): boolean {
+		return this.view === "detail";
+	}
+
+	getDetailTask(): BgTask | undefined {
+		return this.detailTask;
+	}
+
+	scrollDetail(delta: number): void {
+		if (!this.isDetail()) return;
+		this.detailFollow = false;
+		this.detailScroll = Math.max(0, Math.min(this.detailMaxScroll, this.detailScroll + delta));
+	}
+
+	scrollDetailTop(): void {
+		if (!this.isDetail()) return;
+		this.detailFollow = false;
+		this.detailScroll = 0;
+	}
+
+	scrollDetailBottom(): void {
+		if (!this.isDetail()) return;
+		this.detailFollow = true;
+		this.detailScroll = this.detailMaxScroll;
+	}
+
+	setMaxScroll(max: number): void {
+		this.detailMaxScroll = max;
+	}
+
+	getDetailScroll(): { scroll: number; follow: boolean } {
+		return { scroll: this.detailScroll, follow: this.detailFollow };
+	}
+
+	exitDock(): void {
+		this.active = false;
+	}
+
 	inDock(): boolean { return this.active; }
 	selectedIndex(): number { return this.active ? this.index : -1; }
+	getView(): "list" | "detail" { return this.view; }
+
 	reconcile(): void {
+		if (this.view === "detail") {
+			if (this.detailTask) {
+				const updated = this.getTasks().find((t) => t.id === this.detailTask?.id);
+				if (updated) this.detailTask = updated;
+			}
+			return;
+		}
 		if (this.getTasks().length === 0) this.exitDock();
 		else if (this.index >= this.getTasks().length) this.index = this.getTasks().length - 1;
 	}
@@ -88,29 +167,71 @@ export function installDock(
 			debugLog("dock: auto-exited dock mode (no running rows left) — input restored");
 		}
 		render();
-		capturedTui?.requestRender();
+		(capturedTui ?? options.getTui?.())?.requestRender();
 	});
 
 	function render(): void {
 		if (disposed) return;
 		const all = tasks();
-		if (all.length === 0) {
+		if (all.length === 0 && !controller.isDetail()) {
 			stopTicker();
 			ctx.ui.setWidget(DOCK_WIDGET_KEY, undefined, { placement: "belowEditor" });
 			return;
 		}
-		startTicker();
 		ctx.ui.setWidget(DOCK_WIDGET_KEY, factory, { placement: "belowEditor" });
-		capturedTui?.requestRender();
+		startTicker();
+		(capturedTui ?? options.getTui?.())?.requestRender();
 	}
 
 	const factory = (tui: TUI, theme: Theme): DockWidget => {
 		capturedTui = tui;
 		const component: DockWidget = {
 			invalidate() {},
-			dispose() { stopTicker(); },
 			render(width: number): string[] {
 				if (disposed) return [];
+
+				if (controller.isDetail()) {
+					const task = controller.getDetailTask();
+					if (!task) return [];
+					const lines: string[] = detailLines(task, width, Date.now());
+					lines.push(""); // blank line between "Output" and the content
+
+					let outputLines: string[] = [];
+					if (task.logPath && existsSync(task.logPath)) {
+						try {
+							const raw = readFileSync(task.logPath, "utf8");
+							outputLines = raw.trimEnd().split("\n");
+						} catch {
+							outputLines = [];
+						}
+					}
+
+					const height = 10;
+					const maxScroll = Math.max(0, outputLines.length - height);
+					controller.setMaxScroll(maxScroll);
+					const { scroll: curScroll, follow } = controller.getDetailScroll();
+					const scroll = follow ? maxScroll : Math.max(0, Math.min(maxScroll, curScroll));
+					const visible = outputLines.slice(scroll, scroll + height);
+
+					if (visible.length === 0 || (visible.length === 1 && visible[0].trim() === "")) {
+						lines.push(theme.fg("dim", "(no output)"));
+					} else {
+						for (const l of visible) {
+							lines.push(theme.fg("toolOutput", truncateToWidth(l, width)));
+						}
+					}
+
+					lines.push("");
+					const rule = (options.borderColor ?? ((t: string) => theme.fg("dim", t)))(RULE_CHAR.repeat(Math.max(1, width)));
+					lines.push(rule);
+					if (controller.inDock()) {
+						lines.push(theme.fg("dim", "↑ input · ↑/↓ scroll · pgup/pgdown · esc back · k kill"));
+					} else {
+						lines.push(theme.fg("dim", "↓ enter detail · esc back to tasks"));
+					}
+					return lines;
+				}
+
 				const all = tasks();
 				if (all.length === 0) return [];
 				const now = Date.now();
@@ -143,8 +264,8 @@ export function installDock(
 	function startTicker(): void {
 		if (ticker !== undefined) return;
 		ticker = setInterval(() => {
-			if (tasks().length === 0) { stopTicker(); render(); return; }
-			capturedTui?.requestRender();
+			if (tasks().length === 0 && !controller.isDetail()) { stopTicker(); render(); return; }
+			(capturedTui ?? options.getTui?.())?.requestRender();
 		}, 1000);
 		(ticker as { unref?: () => void }).unref?.();
 	}

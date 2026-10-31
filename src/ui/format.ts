@@ -149,8 +149,14 @@ export function footerSegment(runningCount: number): string {
  * Task Details header block. The status line carries the bullet + word; the
  * component colors it with `statusColorToken`. `Type` is always "Agent" in v1.
  */
-export function detailLines(task: BgTask, width: number): string[] {
-	const status = `Status:  ${BULLET} ${statusWord(task.status)}`;
+export function detailLines(task: BgTask, width: number, nowMs?: number): string[] {
+	const elapsed =
+		task.status === "running" && nowMs !== undefined
+			? ` · ${formatDuration(Math.max(0, nowMs - task.startedAt))}`
+			: task.endedAt !== null
+				? ` · ${formatDuration(Math.max(0, task.endedAt - task.startedAt))}`
+				: "";
+	const status = `Status:  ${BULLET} ${statusWord(task.status)}${elapsed}`;
 	const started = `Started: ${formatTimestamp(task.startedAt)}`;
 	const rule = RULE_CHAR.repeat(Math.max(0, width));
 	const lines = [

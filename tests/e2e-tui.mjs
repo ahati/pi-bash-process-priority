@@ -89,6 +89,21 @@ try {
 	);
 	record("D: Task Details panel visible", panelVisible.ok);
 
+	// ─── ↑ from details to input mode (requirement a) ────────────────────────
+	await terminal.press("up");
+	await sleep(500);
+	const upToInputFromDetail = await waitUntil(
+		(screen) => screen.includes("enter detail") || screen.includes("esc back to tasks"),
+		3_000,
+	);
+	record("D-up-detail: ↑ from details goes to input box", upToInputFromDetail.ok);
+
+	// ─── ↓ from input back into details ─────────────────────────────────────
+	await terminal.press("down");
+	await sleep(500);
+	const downIntoDetail = await waitUntil((screen) => screen.includes("↑ input") || screen.includes("k kill"), 3_000);
+	record("D-down-detail: ↓ returns to detail mode", downIntoDetail.ok);
+
 	// ─── esc from details back to dock ───────────────────────────────────────
 	await terminal.press("escape");
 	await sleep(500);
@@ -100,6 +115,17 @@ try {
 	await sleep(500);
 	const returnedToInput = await waitUntil((screen) => !screen.includes("> ●"), 5_000);
 	record("D-esc2: esc returns to input mode", returnedToInput.ok);
+
+	// ─── ↓ into dock and ↑ back to input (requirement a) ─────────────────────
+	await terminal.press("down");
+	await sleep(500);
+	const inDockAgain = await waitUntil((screen) => screen.includes("> ●") || screen.includes(">●"), 3_000);
+	record("D-down: ↓ re-enters dock mode", inDockAgain.ok);
+
+	await terminal.press("up");
+	await sleep(500);
+	const upReturnsToInput = await waitUntil((screen) => !screen.includes("> ●"), 3_000);
+	record("D-up: ↑ on row 0 returns to input mode", upReturnsToInput.ok);
 
 	// ─── down into dock and kill via 'k' ─────────────────────────────────────
 	await terminal.press("down");

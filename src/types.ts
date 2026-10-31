@@ -79,6 +79,8 @@ export interface ForegroundHandle {
 export interface TaskManagerOptions {
 	/** Directory for task logs (§8 PI_BG_TASK_LOG_DIR). */
 	logDir: string;
+	/** Current session identifier, used to session-scope log filenames. */
+	sessionId?: string;
 	/** SIGTERM→SIGKILL grace (§8 PI_BG_KILL_GRACE_MS). */
 	killGraceMs: number;
 	/** Model-visible log read cap + adoption tail buffer (§8 PI_BG_LOG_BYTES). */

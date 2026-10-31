@@ -136,3 +136,62 @@ test("E2E-TUI: enter on selected row triggers onOpenTask", async () => {
 	dock.dispose();
 	await reg.disposeAll();
 });
+
+test("E2E-TUI: ↑ on row 0 returns to input mode", async () => {
+	const reg = makeRegistry();
+	const controller = new DockController(() => reg.list().filter((t: BgTask) => t.status === "running"));
+	const { ctx } = fakeSetWidgetCtx();
+	const dock = installDock(ctx as never, reg, controller);
+	await reg.run("sleep 30", "/tmp");
+
+	const keybindings = {} as never;
+	const editor = new DockEditor(tui as unknown as TUI, editorTheme, keybindings as never, controller, {
+		embedWorkingStatus: true,
+	});
+
+	// Enter dock mode (row 0)
+	editor.handleInput("\x1b[B");
+	assert.equal(controller.inDock(), true);
+	assert.equal(controller.selectedIndex(), 0);
+
+	// ↑ on row 0 exits dock mode back to input
+	editor.handleInput("\x1b[A");
+	assert.equal(controller.inDock(), false, "↑ on row 0 should exit dock mode");
+
+	dock.dispose();
+	await reg.disposeAll();
+});
+
+test("E2E-TUI: in detail mode, ↑ exits dock mode to input box", async () => {
+	const reg = makeRegistry();
+	const controller = new DockController(() => reg.list().filter((t: BgTask) => t.status === "running"));
+	const { ctx } = fakeSetWidgetCtx();
+	const dock = installDock(ctx as never, reg, controller);
+	const task = await reg.run("sleep 30", "/tmp");
+
+	const keybindings = {} as never;
+	const editor = new DockEditor(tui as unknown as TUI, editorTheme, keybindings as never, controller, {
+		embedWorkingStatus: true,
+	});
+
+	// Open detail view for task
+	controller.openDetail(task);
+	assert.equal(controller.isDetail(), true);
+	assert.equal(controller.inDock(), true);
+
+	// ↑ from detail view exits dock mode to input
+	editor.handleInput("\x1b[A");
+	assert.equal(controller.inDock(), false, "↑ in detail mode should exit dock mode to input");
+	assert.equal(controller.isDetail(), true, "detail view should remain active below editor");
+
+	// ↓ from empty editor enters dock mode back to detail view
+	editor.handleInput("\x1b[B");
+	assert.equal(controller.inDock(), true, "↓ should re-enter detail mode");
+
+	// esc closes detail view back to list
+	editor.handleInput("\x1b");
+	assert.equal(controller.isDetail(), false, "esc should close detail view");
+
+	dock.dispose();
+	await reg.disposeAll();
+});

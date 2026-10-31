@@ -113,6 +113,7 @@ class TaskManager implements TaskManagerApi {
 	private readonly niceBin?: string;
 	private readonly ioniceBin?: string;
 	private readonly reniceBin?: string;
+	private readonly sessionId?: string;
 	private readonly logDir: string;
 	private readonly killGraceMs: number;
 	private readonly logBytes: number;
@@ -127,6 +128,7 @@ class TaskManager implements TaskManagerApi {
 		this.niceBin = options.niceBin;
 		this.ioniceBin = options.ioniceBin;
 		this.reniceBin = options.reniceBin;
+		this.sessionId = options.sessionId;
 		this.logDir = options.logDir;
 		this.killGraceMs = Math.max(0, Math.floor(options.killGraceMs));
 		this.logBytes = Math.max(1024, Math.floor(options.logBytes));
@@ -371,6 +373,8 @@ class TaskManager implements TaskManagerApi {
 	}): TaskRecord {
 		this.ensureLogDir();
 		const id = `task-${this.counter++}`;
+		const sid = (this.sessionId ?? "").trim().replace(/[^a-zA-Z0-9_-]/g, "_");
+		const logFileName = sid ? `${id}-${sid}.log` : `${id}.log`;
 		const task: BgTask = {
 			id,
 			command: input.command,
@@ -382,7 +386,7 @@ class TaskManager implements TaskManagerApi {
 			endedAt: null,
 			exitCode: null,
 			signal: null,
-			logPath: join(this.logDir, `${id}.log`),
+			logPath: join(this.logDir, logFileName),
 		};
 		if (input.name !== undefined) task.name = input.name;
 

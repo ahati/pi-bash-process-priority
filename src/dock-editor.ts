@@ -30,6 +30,10 @@ export class DockEditor extends CustomEditor {
 		this.dock = dock;
 	}
 
+	getTui(): TUI {
+		return this.tui;
+	}
+
 	/** Classify an arrow key across legacy CSI, SS3, and Kitty-protocol encodings. */
 		private static kittyArrow(data: string): "up" | "down" | "left" | "right" | undefined {
 		// ESC [ <mods> <letter>  (CSI / Kitty)  or  ESC O <letter>  (SS3)
@@ -48,10 +52,22 @@ export class DockEditor extends CustomEditor {
 	private isUp(data: string): boolean {
 		return matchesKey(data, Key.up) || DockEditor.UP_SEQUENCES.includes(data) || DockEditor.kittyArrow(data) === "up";
 	}
+	private isPageUp(data: string): boolean {
+		return matchesKey(data, Key.pageUp) || /^\u001b\[5(;[0-9:]+)?~$/.test(data);
+	}
+	private isPageDown(data: string): boolean {
+		return matchesKey(data, Key.pageDown) || /^\u001b\[6(;[0-9:]+)?~$/.test(data);
+	}
+	private isHome(data: string): boolean {
+		return matchesKey(data, Key.home) || /^\u001b\[(H|1~|1;[0-9:]+H)$/.test(data);
+	}
+	private isEnd(data: string): boolean {
+		return matchesKey(data, Key.end) || /^\u001b\[(F|4~|1;[0-9:]+F)$/.test(data);
+	}
 
 	handleInput(data: string): void {
 		if (!this.dock.inDock()) {
-			// ↓ on an empty editor falls through to the dock when it has rows.
+			// ↓ on an empty editor falls through to the dock when it has rows or detail is open.
 			if (this.isDown(data)) {
 				if (this.getText().trim() !== "") {
 					debugLog("dock-editor: ↓ ignored (editor not empty)");
@@ -63,9 +79,18 @@ export class DockEditor extends CustomEditor {
 					this.tui.requestRender();
 					return;
 				}
-				debugLog("dock-editor: ↓ but enterDock returned false (no running rows)");
+				debugLog("dock-editor: ↓ but enterDock returned false (no running rows or detail)");
 				super.handleInput(data);
 				return;
+			}
+			// When detail view is showing below an empty editor, Esc closes detail view back to task list
+			if (this.dock.isDetail?.() && this.getText().trim() === "") {
+				const isEscape = matchesKey(data, Key.escape) || data === "\u001b" || /^\u001b\[1?27(;[0-9:]+)?u$/.test(data);
+				if (isEscape) {
+					this.dock.closeDetail?.();
+					this.tui.requestRender();
+					return;
+				}
 			}
 			super.handleInput(data);
 			return;
@@ -75,7 +100,7 @@ export class DockEditor extends CustomEditor {
 		// Defensive: if the rows vanished (task finished/timed out on its own)
 		// and no reconcile ran, do not trap the keyboard. Exit dock mode and
 		// let the keystroke through to the real editor.
-		if (!this.dock.selected()) {
+		if (!this.dock.isDetail?.() && !this.dock.selected()) {
 			debugLog("dock-editor: dock mode had no selectable row — auto-exiting");
 			this.dock.exitDock();
 			this.tui.requestRender();
@@ -89,7 +114,71 @@ export class DockEditor extends CustomEditor {
 			super.handleInput(data);
 			return;
 		}
+
+		// Detail mode navigation (task details rendered below editor)
+		if (this.dock.isDetail?.()) {
+			const isEscape = matchesKey(data, Key.escape) || data === "\u001b" || /^\u001b\[1?27(;[0-9:]+)?u$/.test(data);
+			if (isEscape) {
+				this.dock.closeDetail?.();
+				this.dock.exitDock?.();
+				this.tui.requestRender();
+				return;
+			}
+			if (this.isUp(data)) {
+				const scrollInfo = this.dock.getDetailScroll?.();
+				if (!scrollInfo || scrollInfo.scroll <= 0) {
+					debugLog("dock-editor: ↑ from top of detail view — exiting dock mode to input box");
+					this.dock.exitDock();
+					this.tui.requestRender();
+					return;
+				}
+				this.dock.scrollDetail?.(-1);
+				this.tui.requestRender();
+				return;
+			}
+			if (this.isDown(data)) {
+				this.dock.scrollDetail?.(1);
+				this.tui.requestRender();
+				return;
+			}
+			if (this.isPageUp(data)) {
+				this.dock.scrollDetail?.(-10);
+				this.tui.requestRender();
+				return;
+			}
+			if (this.isPageDown(data)) {
+				this.dock.scrollDetail?.(10);
+				this.tui.requestRender();
+				return;
+			}
+			if (this.isHome(data)) {
+				this.dock.scrollDetailTop?.();
+				this.tui.requestRender();
+				return;
+			}
+			if (this.isEnd(data)) {
+				this.dock.scrollDetailBottom?.();
+				this.tui.requestRender();
+				return;
+			}
+			if (data === "k") {
+				const task = this.dock.getDetailTask?.();
+				if (task) this.onKillTask?.(task);
+				this.tui.requestRender();
+				return;
+			}
+			return;
+		}
+
+		// List mode navigation
 		if (this.isUp(data)) {
+			// (a) Up arrow exits dock mode back to the input box when at top item
+			if (this.dock.selectedIndex && this.dock.selectedIndex() <= 0) {
+				debugLog("dock-editor: ↑ from top row — exiting dock mode to input box");
+				this.dock.exitDock();
+				this.tui.requestRender();
+				return;
+			}
 			this.dock.move(-1);
 			this.tui.requestRender();
 			return;
@@ -102,8 +191,14 @@ export class DockEditor extends CustomEditor {
 		const isEnter = matchesKey(data, Key.enter) || data === "\r" || /^\u001b\[1?3(;[0-9:]+)?u$/.test(data);
 		if (isEnter) {
 			const task = this.dock.selected();
-			if (task) this.onOpenTask?.(task);
-			else this.dock.exitDock();
+			if (task) {
+				if (this.dock.openDetail) {
+					this.dock.openDetail(task);
+				}
+				this.onOpenTask?.(task);
+			} else {
+				this.dock.exitDock();
+			}
 			this.tui.requestRender();
 			return;
 		}

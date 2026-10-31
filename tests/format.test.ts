@@ -127,6 +127,9 @@ test("detailLines matches the §4.2 header block", () => {
 		"─".repeat(40),
 		"Output",
 	]);
+
+	const linesWithNow = detailLines(task(), 40, task().startedAt + 15_000);
+	assert.equal(linesWithNow[3], "Status:  ● running · 15s");
 });
 
 test("notificationCollapsedLine matches Pi style", () => {

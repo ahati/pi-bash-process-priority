@@ -177,6 +177,7 @@ export default function (pi: ExtensionAPI) {
 
 		registry = createTaskManager({
 			logDir: resolveLogDir(bg, ctx.cwd),
+			sessionId: ctx.sessionManager?.getSessionId?.(),
 			killGraceMs: bg.killGraceMs,
 			logBytes: bg.logBytes,
 			maxFinished: bg.tasksMax,
@@ -327,9 +328,12 @@ export default function (pi: ExtensionAPI) {
 		});
 
 		// /tasks command (§7.9).
+		let dockControllerRef: DockController | undefined;
+		let dockRef: ReturnType<typeof installDock> | undefined;
+
 		pi.registerCommand("tasks", {
 			description: "View background tasks",
-			handler: async (_args, commandCtx) => {
+			handler: async (args, commandCtx) => {
 				if (!registry) {
 					if (commandCtx.hasUI) commandCtx.ui.notify("Background tasks are not active this session.", "info");
 					return;
@@ -342,6 +346,18 @@ export default function (pi: ExtensionAPI) {
 					);
 					return;
 				}
+				if (dockControllerRef && dockControllerRef.enterDock()) {
+					if (typeof args === "string" && args.trim()) {
+						const task = registry.get(args.trim());
+						if (task) {
+							dockControllerRef.openDetail(task);
+							dockRef?.refresh();
+							return;
+						}
+					}
+					dockRef?.refresh();
+					return;
+				}
 				await openTasksPanel(commandCtx, registry, undefined as unknown as KeybindingsManager);
 			},
 		});
@@ -352,12 +368,15 @@ export default function (pi: ExtensionAPI) {
 			// (with its own "N task(s) · /tasks" line) is the only injected
 			// chrome — a below-editor widget that renders above the footer.
 			const controller = new DockController(() => (registry ? registry.list().filter((task) => task.status === "running") : []));
+			dockControllerRef = controller;
 			let dockEditorRef: DockEditor | undefined;
 			const dock = installDock(ctx, registry, controller, {
 				// The bottom rule reuses the live editor's border color so the
 				// dock reads as part of the editor frame.
 				borderColor: (text) => dockEditorRef?.borderColor?.(text) ?? text,
+				getTui: () => dockEditorRef?.getTui?.(),
 			});
+			dockRef = dock;
 			const prevEditor = ctx.ui.getEditorComponent();
 			if (!prevEditor) {
 				ctx.ui.setEditorComponent((tui, theme, keybindings) => {
@@ -366,9 +385,8 @@ export default function (pi: ExtensionAPI) {
 					// as a separate line above the input.
 					const editor = new DockEditor(tui, theme, keybindings, controller, { embedWorkingStatus: true });
 					dockEditorRef = editor;
-					editor.onOpenTask = (task: BgTask) => {
-						// detailOnly: Esc closes the panel → back to dock selection
-						void openTasksPanel(ctxRef as ExtensionContext, registry as TaskManagerApi, keybindings, task, true);
+					editor.onOpenTask = (_task: BgTask) => {
+						// Detail view opens in-place below the editor without duplicate dividers
 					};
 					editor.onKillTask = (task: BgTask) => {
 						void registry?.kill(task.id, "dock key kill");

@@ -101,6 +101,46 @@ test("DockController: reconcile exits dock mode when rows vanish", async () => {
 	}
 });
 
+test("DockController: openDetail, scrollDetail, and closeDetail", async () => {
+	const reg = makeRegistry();
+	try {
+		const task = await reg.run("sleep 10", "/tmp");
+		const controller = new DockController(() => reg.list().filter((t: BgTask) => t.status === "running"));
+		controller.enterDock();
+		controller.openDetail(task);
+		assert.equal(controller.isDetail(), true);
+		assert.equal(controller.getDetailTask()?.id, task.id);
+
+		controller.setMaxScroll(20);
+		controller.scrollDetail(5);
+		assert.equal(controller.getDetailScroll().scroll, 5);
+		assert.equal(controller.getDetailScroll().follow, false);
+
+		controller.scrollDetailBottom();
+		assert.equal(controller.getDetailScroll().scroll, 20);
+		assert.equal(controller.getDetailScroll().follow, true);
+
+		controller.scrollDetailTop();
+		assert.equal(controller.getDetailScroll().scroll, 0);
+
+		// exitDock in detail mode unfocuses dock but preserves detail view
+		controller.exitDock();
+		assert.equal(controller.inDock(), false);
+		assert.equal(controller.isDetail(), true);
+
+		// enterDock re-focuses detail view
+		controller.enterDock();
+		assert.equal(controller.inDock(), true);
+		assert.equal(controller.isDetail(), true);
+
+		controller.closeDetail();
+		assert.equal(controller.isDetail(), false);
+		assert.equal(controller.inDock(), true);
+	} finally {
+		await reg.disposeAll();
+	}
+});
+
 // ─── installDock ─────────────────────────────────────────────────────────────
 
 test("installDock: widget hidden while no tasks are running", async () => {

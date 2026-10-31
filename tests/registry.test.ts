@@ -139,6 +139,20 @@ test("run completes: status, exitCode, endedAt, log header", async (t) => {
 	assert.equal(h.manager.hasRunning(), false);
 });
 
+test("logPath includes sessionId when provided", async (t) => {
+	const h = await harness({ sessionId: "sess-abc-123" });
+	t.after(() => cleanup(h));
+
+	const task = await h.manager.run(`printf 'hello session\\n'`, h.dir);
+	assert.equal(task.id, "task-1");
+	assert.equal(task.logPath, join(h.dir, "task-1-sess-abc-123.log"));
+
+	const done = await h.waitTerminal(task.id);
+	assert.equal(done.logPath, join(h.dir, "task-1-sess-abc-123.log"));
+	const log = await readFile(done.logPath, "utf8");
+	assert.ok(log.includes("hello session"));
+});
+
 test("run -> kill: status killed, reason recorded, group gone", async (t) => {
 	const h = await harness();
 	t.after(() => cleanup(h));
