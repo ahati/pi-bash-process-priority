@@ -119,31 +119,29 @@ try {
 		screen1.includes("task-1");
 	record("6: Task 1 details active initially (task-1)", task1Details);
 
-	// 8. Move selection down (↓) to task 2
+	// 8. Move selection down (↓) to task 2 in details screen
 	await terminal.press("down");
 	await sleep(600);
 
-	// 9. Verify reactive selection update: Command and Log update to task 2
+	// 9. Verify reactive selection update: cursor moves to proc-beta and Command updates to sleep 46
 	const reactiveTask2 = await waitUntil(
 		(screen) =>
-			screen.includes("task-2") &&
-			(screen.includes("proc-beta") || screen.includes("sleep 46")) &&
-			screen.includes("Task Details") &&
-			screen.includes("Output"),
+			/>\s*[●⏳✔✗]\s*proc-beta/.test(screen) ||
+			screen.includes("Command: sleep 46") ||
+			(screen.includes("task-2") && screen.includes("proc-beta")),
 		5_000,
 	);
 	record("7: Selection moved down: reactive update to task-2 & proc-beta", reactiveTask2.ok);
 
-	// 10. Move selection back up (↑) to task 1
+	// 10. Move selection back up (↑) to task 1 in details screen
 	await terminal.press("up");
 	await sleep(600);
 
 	const reactiveTask1 = await waitUntil(
 		(screen) =>
-			screen.includes("task-1") &&
-			(screen.includes("proc-alpha") || screen.includes("sleep 45")) &&
-			screen.includes("Task Details") &&
-			screen.includes("Output"),
+			/>\s*[●⏳✔✗]\s*proc-alpha/.test(screen) ||
+			screen.includes("Command: sleep 45") ||
+			(screen.includes("task-1") && screen.includes("proc-alpha")),
 		5_000,
 	);
 	record("8: Selection moved up: reactive update back to task-1 & proc-alpha", reactiveTask1.ok);

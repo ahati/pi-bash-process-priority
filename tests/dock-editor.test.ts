@@ -162,13 +162,14 @@ test("up arrow on row > 0 moves selection up", () => {
 	assert.deepEqual(dock.recorded, ["up"]);
 });
 
-test("detail mode navigation: enter opens detail, up/down scrolls, esc closes detail", () => {
+test("detail mode navigation: enter opens detail, up/down moves task selection, pgup/pgdn scrolls log, esc closes detail", () => {
 	const dock = makeDock();
 	let isDetail = false;
-	let detailScroll = 1;
+	let selectedIdx = 0;
 	const detailScrolled: number[] = [];
 	Object.assign(dock, {
 		isDetail: () => isDetail,
+		selectedIndex: () => selectedIdx,
 		openDetail: () => {
 			isDetail = true;
 			dock.recorded.push("openDetail");
@@ -177,10 +178,12 @@ test("detail mode navigation: enter opens detail, up/down scrolls, esc closes de
 			isDetail = false;
 			dock.recorded.push("closeDetail");
 		},
-		getDetailScroll: () => ({ scroll: detailScroll, follow: false }),
+		move: (delta: number) => {
+			selectedIdx += delta;
+			dock.recorded.push(delta === -1 ? "up" : "down");
+		},
 		scrollDetail: (d: number) => {
 			detailScrolled.push(d);
-			detailScroll += d;
 		},
 	});
 	const editor = makeEditor(dock);
@@ -190,20 +193,27 @@ test("detail mode navigation: enter opens detail, up/down scrolls, esc closes de
 	assert.equal(isDetail, true);
 	assert.ok(dock.recorded.includes("openDetail"));
 
-	// In detail mode: when scrolled > 0, up scrolls up
-	editor.handleInput("\x1b[A"); // up (scroll was 1 -> becomes 0)
-	assert.deepEqual(detailScrolled, [-1]);
-	assert.equal(detailScroll, 0);
+	// Down arrow moves selection down
+	editor.handleInput("\x1b[B"); // down
+	assert.ok(dock.recorded.includes("down"));
+	assert.equal(selectedIdx, 1);
 
-	// When at top (scroll 0), up exits dock mode to editor
-	editor.handleInput("\x1b[A"); // up at scroll 0
+	// Up arrow moves selection up
+	editor.handleInput("\x1b[A"); // up
+	assert.ok(dock.recorded.includes("up"));
+	assert.equal(selectedIdx, 0);
+
+	// Up arrow at top row exits dock mode to editor
+	editor.handleInput("\x1b[A"); // up at row 0
 	assert.ok(dock.recorded.includes("exit"));
 
-	// Down scrolls down
-	editor.handleInput("\x1b[B"); // down
-	assert.deepEqual(detailScrolled, [-1, 1]);
+	// PgUp / PgDn scrolls log
+	editor.handleInput("\u001b[5~"); // PgUp
+	assert.deepEqual(detailScrolled, [-10]);
+	editor.handleInput("\u001b[6~"); // PgDn
+	assert.deepEqual(detailScrolled, [-10, 10]);
 
-	// In detail mode: esc closes detail back to list
+	// In detail mode: esc closes detail and exits
 	editor.handleInput("\x1b");
 	assert.equal(isDetail, false);
 	assert.ok(dock.recorded.includes("closeDetail"));

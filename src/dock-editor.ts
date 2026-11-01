@@ -135,61 +135,43 @@ export class DockEditor extends CustomEditor {
 			return;
 		}
 
-		// Detail mode navigation
-		if (this.dock.isDetail?.()) {
-			const isEscape = matchesKey(data, Key.escape) || data === "\u001b" || /^\u001b\[1?27(;[0-9:]+)?u$/.test(data);
-			if (isEscape) {
+		// Escape closes expanded / detail view and exits dock mode
+		const isEscape = matchesKey(data, Key.escape) || data === "\u001b" || /^\u001b\[1?27(;[0-9:]+)?u$/.test(data);
+		if (isEscape) {
+			if (this.dock.isExpanded?.()) {
+				this.dock.collapseTasks?.();
+			}
+			if (this.dock.isDetail?.()) {
 				this.dock.closeDetail?.();
-				this.tui.requestRender();
-				return;
 			}
-			if (this.isUp(data)) {
-				const scrollInfo = this.dock.getDetailScroll?.();
-				if (!scrollInfo || scrollInfo.scroll <= 0) {
-					debugLog("dock-editor: ↑ from top of detail view — exiting dock mode to input box");
-					this.dock.exitDock();
-					this.tui.requestRender();
-					return;
-				}
-				this.dock.scrollDetail?.(-1);
-				this.tui.requestRender();
-				return;
-			}
-			if (this.isDown(data)) {
-				this.dock.scrollDetail?.(1);
-				this.tui.requestRender();
-				return;
-			}
-			if (this.isPageUp(data)) {
-				this.dock.scrollDetail?.(-10);
-				this.tui.requestRender();
-				return;
-			}
-			if (this.isPageDown(data)) {
-				this.dock.scrollDetail?.(10);
-				this.tui.requestRender();
-				return;
-			}
-			if (this.isHome(data)) {
-				this.dock.scrollDetailTop?.();
-				this.tui.requestRender();
-				return;
-			}
-			if (this.isEnd(data)) {
-				this.dock.scrollDetailBottom?.();
-				this.tui.requestRender();
-				return;
-			}
-			if (data === "k") {
-				const task = this.dock.getDetailTask?.();
-				if (task) this.onKillTask?.(task);
-				this.tui.requestRender();
-				return;
-			}
+			this.dock.exitDock();
+			this.tui.requestRender();
 			return;
 		}
 
-		// List mode navigation
+		// Output log scrolling via PgUp / PgDn / Home / End
+		if (this.isPageUp(data)) {
+			this.dock.scrollDetail?.(-10);
+			this.tui.requestRender();
+			return;
+		}
+		if (this.isPageDown(data)) {
+			this.dock.scrollDetail?.(10);
+			this.tui.requestRender();
+			return;
+		}
+		if (this.isHome(data)) {
+			this.dock.scrollDetailTop?.();
+			this.tui.requestRender();
+			return;
+		}
+		if (this.isEnd(data)) {
+			this.dock.scrollDetailBottom?.();
+			this.tui.requestRender();
+			return;
+		}
+
+		// ↑ navigation: moves selection up in task list, or exits to input if at top row
 		if (this.isUp(data)) {
 			if (this.dock.selectedIndex && this.dock.selectedIndex() <= 0) {
 				debugLog("dock-editor: ↑ from top row — exiting dock mode to input box");
@@ -202,15 +184,17 @@ export class DockEditor extends CustomEditor {
 			return;
 		}
 
+		// ↓ navigation: moves selection down in task list
 		if (this.isDown(data)) {
 			this.dock.move?.(1, this.tui.terminal?.rows);
 			this.tui.requestRender();
 			return;
 		}
 
+		// Enter opens or refreshes detail for selected task
 		const isEnter = matchesKey(data, Key.enter) || data === "\r" || /^\u001b\[1?3(;[0-9:]+)?u$/.test(data);
 		if (isEnter) {
-			const task = this.dock.selected?.();
+			const task = this.dock.selected?.() ?? this.dock.getDetailTask?.();
 			if (task) {
 				this.dock.openDetail?.(task);
 				this.onOpenTask?.(task);
@@ -221,18 +205,9 @@ export class DockEditor extends CustomEditor {
 			return;
 		}
 
-		const isEscape = matchesKey(data, Key.escape) || data === "\u001b" || /^\u001b\[1?27(;[0-9:]+)?u$/.test(data);
-		if (isEscape) {
-			if (this.dock.isExpanded?.()) {
-				this.dock.collapseTasks?.();
-			}
-			this.dock.exitDock();
-			this.tui.requestRender();
-			return;
-		}
-
+		// 'k' terminates selected task
 		if (data === "k") {
-			const task = this.dock.selected?.();
+			const task = this.dock.selected?.() ?? this.dock.getDetailTask?.();
 			if (task) this.onKillTask?.(task);
 			this.tui.requestRender();
 			return;
