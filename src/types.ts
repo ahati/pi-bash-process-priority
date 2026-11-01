@@ -41,6 +41,10 @@ export interface BgTask {
 	signal: NodeJS.Signals | null;
 	/** <logDir>/task-N.log — merged stdout+stderr (§7.3). */
 	logPath: string;
+	/** Working directory where the command was spawned. */
+	cwd?: string;
+	/** Cumulative bytes written to the log file. */
+	bytesWritten?: number;
 	/** For killed tasks: why (signal name, "session shutdown", user kill…). */
 	reason?: string;
 }
@@ -172,6 +176,10 @@ export interface TaskManagerApi {
 	hasRunning(): boolean;
 	/** Kill everything still running; idempotent; for session_shutdown. */
 	disposeAll(reason?: string): Promise<void>;
+	/** Re-run a previous task with its original command, cwd, and parameters. */
+	rerun?(idOrPrefix: string): Promise<BgTask>;
+	/** Stop all running background tasks. */
+	stopAllRunning?(): Promise<{ stopped: number; failures: string[] }>;
 	/**
 	 * Subscribe to registry changes (spawn/adopt/exit/kill). Returns an
 	 * unsubscribe function. UI surfaces (dock, panel) use this to refresh.

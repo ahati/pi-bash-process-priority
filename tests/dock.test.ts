@@ -220,7 +220,7 @@ test("installDock: task spawns → widget renders row + rules", async () => {
 		assert.ok(rendered, "expected dock lines after spawn");
 		const text = rendered.join("\n");
 		const first = rendered[0];
-		assert.match(first, /● \[\d\d:\d\d:\d\d\] sleep 2 running/); // no top rule — rows come first
+		assert.match(first, /[⏳●] \[\d\d:\d\d:\d\d\] sleep 2 running/); // no top rule — rows come first
 		assert.match(rendered.at(-1) ?? "", /─/); // bottom rule (last line)
 		
 		dock.dispose();
@@ -249,7 +249,7 @@ test("installDock: bottom rule uses the injected border color; no top rule", asy
 	}
 });
 
-test("installDock: rows clamp to 7", async () => {
+test("installDock: rows clamp to at most 3", async () => {
 	const reg = makeRegistry({ logDir: "/tmp/bg-dock-clamp", killGraceMs: 100, logBytes: 4096, maxFinished: 20 });
 	const { ctx, calls } = fakeCtx();
 	try {
@@ -259,8 +259,8 @@ test("installDock: rows clamp to 7", async () => {
 
 		const rendered = latestLines(calls);
 		assert.ok(rendered);
-		const rowLines = rendered.filter((line: string) => line.includes("● ["));
-		assert.equal(rowLines.length <= 7, true, `expected \u22647 rows, got ${rowLines.length}`);
+		const rowLines = rendered.filter((line: string) => line.includes("⏳ [") || line.includes("● ["));
+		assert.equal(rowLines.length, 3, `expected 3 rows, got ${rowLines.length}`);
 		dock.dispose();
 	} finally {
 		await reg.disposeAll();
@@ -313,7 +313,7 @@ test("installDock: completed tasks leave the dock; empty \u2192 widget hidden", 
 				tui,
 				theme,
 			);
-			const rows = component.render(120).filter((line) => line.includes("\u25cf ["));
+			const rows = component.render(120).filter((line) => line.includes("⏳ [") || line.includes("● [") || line.includes("\u25cf ["));
 			assert.equal(rows.length, 0, "no task rows may render after the last task ends");
 		}
 		dock.dispose();

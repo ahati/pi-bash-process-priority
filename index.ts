@@ -39,10 +39,10 @@ import {
 	resetBashOverrideState,
 } from "./src/bash-override.ts";
 import { DockController, installDock } from "./src/ui/dock.ts";
-import { openTasksPanel } from "./src/ui/panel.ts";
 import { DockEditor } from "./src/dock-editor.ts";
 import { formatDuration } from "./src/ui/format.ts";
 import { renderBgNotification } from "./src/ui/notification.ts";
+import { buildBashIntentSystemPrompt } from "./src/ui/bash-intent.ts";
 import type { BgNotificationDetails, BgTask, TaskManagerApi } from "./src/types.ts";
 
 /** True when the value looks like a persisted BgTask details payload. */
@@ -128,6 +128,18 @@ export default function (pi: ExtensionAPI) {
 	pi.on("user_bash", () => {
 		const operations = getSharedOperations();
 		return operations ? { operations } : undefined;
+	});
+
+	// Opt-in: teach the bash intent-comment convention so the model supplies it
+	// without the user having to ask (when PI_BASH_INTENT_MODE=render-and-instruct).
+	pi.on("before_agent_start", async (event) => {
+		const mode = process.env.PI_BASH_INTENT_MODE;
+		if (mode === "render-and-instruct") {
+			const prompt = buildBashIntentSystemPrompt(event.systemPrompt);
+			if (prompt !== undefined) {
+				return { systemPrompt: prompt };
+			}
+		}
 	});
 
 	/** §6 — one structured entry per transition; RPC clients see entry_appended. */
@@ -367,48 +379,11 @@ export default function (pi: ExtensionAPI) {
 			},
 		});
 
-		// /tasks command (§7.9).
-		let dockControllerRef: DockController | undefined;
-		let dockRef: ReturnType<typeof installDock> | undefined;
-
-		pi.registerCommand("tasks", {
-			description: "View background tasks",
-			handler: async (args, commandCtx) => {
-				if (!registry) {
-					if (commandCtx.hasUI) commandCtx.ui.notify("Background tasks are not active this session.", "info");
-					return;
-				}
-				if (commandCtx.mode !== "tui") {
-					const running = registry.list().filter((task) => task.status === "running");
-					commandCtx.ui.notify(
-						running.length === 0 ? "No background tasks." : `${running.length} running: ${running.map((task) => task.id).join(", ")}`,
-						"info",
-					);
-					return;
-				}
-				if (dockControllerRef && dockControllerRef.enterDock()) {
-					if (typeof args === "string" && args.trim()) {
-						const task = registry.get(args.trim());
-						if (task) {
-							dockControllerRef.openDetail(task);
-							dockRef?.refresh();
-							return;
-						}
-					}
-					dockRef?.refresh();
-					return;
-				}
-				await openTasksPanel(commandCtx, registry, undefined as unknown as KeybindingsManager);
-			},
-		});
-
 		// UI (TUI only, §7.7-§7.9).
 		if (ctx.mode === "tui" && ctx.hasUI) {
 			// PRD-004 v3.2: the normal pi footer is left untouched; the dock
-			// (with its own "N task(s) · /tasks" line) is the only injected
-			// chrome — a below-editor widget that renders above the footer.
+			// is the only injected chrome — a below-editor widget that renders above the footer.
 			const controller = new DockController(() => (registry ? registry.list().filter((task) => task.status === "running") : []));
-			dockControllerRef = controller;
 			let dockEditorRef: DockEditor | undefined;
 			const dock = installDock(ctx, registry, controller, {
 				// The bottom rule reuses the live editor's border color so the
@@ -416,7 +391,6 @@ export default function (pi: ExtensionAPI) {
 				borderColor: (text) => dockEditorRef?.borderColor?.(text) ?? text,
 				getTui: () => dockEditorRef?.getTui?.(),
 			});
-			dockRef = dock;
 			const prevEditor = ctx.ui.getEditorComponent();
 			if (!prevEditor) {
 				ctx.ui.setEditorComponent((tui, theme, keybindings) => {
@@ -436,7 +410,7 @@ export default function (pi: ExtensionAPI) {
 				editorInstalled = true;
 			} else if (ctx.hasUI) {
 				debugLog("editor install skipped: another extension owns the editor component");
-				ctx.ui.notify("pi-bash-process-priority: another extension owns the editor — dock selection disabled, /tasks still works", "info");
+				ctx.ui.notify("pi-bash-process-priority: another extension owns the editor — dock selection disabled", "info");
 			}
 			disposeUI = () => {
 				dock.dispose();

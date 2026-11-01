@@ -77,26 +77,27 @@ test("terminalStatusLabel", () => {
 });
 
 test("dockRow matches §4.1, selection and terminal suffixes", () => {
-	assert.equal(dockRow(task(), false, 80), "  ● [10:56:52] sleep 120 running");
-	assert.equal(dockRow(task(), true, 80), "> ● [10:56:52] sleep 120 running");
+	assert.equal(dockRow(task(), false, 80), "  ⏳ [10:56:52] sleep 120 running");
+	assert.equal(dockRow(task(), true, 80), "> ⏳ [10:56:52] sleep 120 running");
 	assert.equal(
 		dockRow(task({ status: "failed", exitCode: 1 }), false, 80),
-		"  ● [10:56:52] sleep 120 failed (exit 1)",
+		"  ✗ [10:56:52] sleep 120 failed (exit 1)",
 	);
 	assert.equal(
 		dockRow(task({ status: "killed", signal: "SIGKILL", reason: "user kill" }), false, 80),
-		"  ● [10:56:52] sleep 120 killed (user kill)",
+		"  ✗ [10:56:52] sleep 120 killed (user kill)",
 	);
 	assert.equal(
 		dockRow(task({ status: "killed", signal: "SIGKILL" }), false, 80),
-		"  ● [10:56:52] sleep 120 killed (SIGKILL)",
+		"  ✗ [10:56:52] sleep 120 killed (SIGKILL)",
 	);
+	assert.equal(dockRow(task({ status: "completed", exitCode: 0 }), false, 80).startsWith("  ✔ [10:56:52]"), true);
 	assert.equal(dockRow(task({ status: "completed", exitCode: 0 }), false, 80).endsWith("completed"), true);
 });
 
 test("dockRow collapses commands to one line and never exceeds width", () => {
 	const row = dockRow(task({ command: "echo one\necho two\t  end" }), false, 80);
-	assert.equal(row, "  ● [10:56:52] echo one echo two end running");
+	assert.equal(row, "  ⏳ [10:56:52] echo one echo two end running");
 	for (const width of [10, 24, 30, 40]) {
 		assert.ok(visibleWidth(dockRow(task({ command: "x".repeat(200) }), false, width)) <= width);
 	}
@@ -120,7 +121,7 @@ test("detailLines matches the §4.2 header block", () => {
 		"Task Details",
 		"",
 		"Command: sleep 120",
-		"Status:  ● running",
+		"Status:  ⏳ running",
 		"Type:    Agent",
 		"Started: 2026-10-31 10:56:52",
 		"",
@@ -129,7 +130,7 @@ test("detailLines matches the §4.2 header block", () => {
 	]);
 
 	const linesWithNow = detailLines(task(), 40, task().startedAt + 15_000);
-	assert.equal(linesWithNow[3], "Status:  ● running · 15s");
+	assert.equal(linesWithNow[3], "Status:  ⏳ running · 15s");
 
 	const subagentTask = detailLines(task({ callerType: "subagent" }), 40);
 	assert.equal(subagentTask[4], "Type:    Subagent");

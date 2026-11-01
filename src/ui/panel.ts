@@ -1,26 +1,31 @@
 /**
  * `/tasks` panel (§7.9): list view + Task Details, rendered as a fullscreen
  * `ctx.ui.custom<Component>` component (not an overlay).
+ * Enhanced with task details, dynamic tail scrolling, activity metrics,
+ * unread badges, and quick actions from pi-background-tasks.
  */
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { KeybindingsManager } from "@earendil-works/pi-coding-agent";
 import { Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
-import type { Component } from "@earendil-works/pi-tui";
+import type { Component, TuiMouseEvent } from "@earendil-works/pi-tui";
 import type { BgTask, TaskManagerApi } from "../types.ts";
-import { detailLines, dockRow } from "./format.ts";
+import {
+	detailLines,
+	dockRow,
+	formatOutputStatusLine,
+	formatSize,
+} from "./format.ts";
+import { boundedRead, DETAIL_TAIL_BYTES, toOutputLines } from "../log-reader.ts";
+import { enableTerminalMouse, disableTerminalMouse, parseMouseInput } from "./terminal-mouse.ts";
 
 const MAX_LIST_ROWS = 10;
-const LOG_LIMIT = 50 * 1024;
 const TICK_MS = 1000;
-
-const LIST_HINT = "↑/↓ select · enter details · k kill · s input · esc close";
-const DETAIL_HINT = "↑/↓ scroll · pgup/pgdown page · ctrl+end bottom · ctrl+home top · esc back";
 const DETAIL_VIEWPORT_HEIGHT = 10;
 
 type View = "list" | "detail";
 
-class TasksPanel implements Component {
+export class TasksPanel implements Component {
 	private view: View = "list";
 	private listIndex = 0;
 	private listOffset = 0;
@@ -34,6 +39,18 @@ class TasksPanel implements Component {
 	private lastWidth = 0;
 	private cache: string[] = [];
 
+	// Enhanced capabilities from pi-background-tasks
+	private showHistory = false;
+	private readonly seenTaskIds = new Set<string>();
+	private confirmStopAllArmed = false;
+	private actionMessage: string | undefined;
+	private tailBytesRead = 0;
+	private tailTotalBytes = 0;
+	private tailTruncated = false;
+	private tailError: string | undefined;
+	private readonly lastBytesByTask = new Map<string, number>();
+	private readonly recentActivityByTask = new Map<string, { delta: number; timestamp: number }>();
+
 	constructor(
 		private readonly theme: Theme,
 		private readonly registry: TaskManagerApi,
@@ -45,8 +62,14 @@ class TasksPanel implements Component {
 		if (initialTask) {
 			this.view = "detail";
 			this.detailTask = initialTask;
+			this.seenTaskIds.add(initialTask.id);
 			void this.reloadLogs();
 			if (initialTask.status === "running") this.startTicker();
+		} else {
+			const all = registry.list();
+			const hasRunning = all.some((t) => t.status === "running");
+			const hasFinished = all.some((t) => t.status !== "running");
+			if (!hasRunning && hasFinished) this.showHistory = true;
 		}
 	}
 
@@ -56,14 +79,98 @@ class TasksPanel implements Component {
 	}
 
 	handleInput(data: string): void {
+		const mouse = parseMouseInput(data);
+		if (mouse.sawMouse) {
+			if (mouse.wheelDelta !== 0) {
+				if (this.view === "list") {
+					const tasks = this.currentTasks();
+					if (tasks.length > 0) {
+						this.listIndex = Math.min(Math.max(0, tasks.length - 1), this.listIndex + mouse.wheelDelta);
+						this.clampListOffset(tasks.length);
+						this.invalidateCache();
+					}
+				} else {
+					const height = this.pageSize();
+					this.follow = false;
+					this.scroll = Math.min(this.maxScroll(height), Math.max(0, this.scroll + mouse.wheelDelta));
+					this.invalidateCache();
+				}
+			}
+			return;
+		}
+
 		if (this.view === "list") this.handleListInput(data);
 		else this.handleDetailInput(data);
 	}
 
+	handleMouse(event: TuiMouseEvent): { handled: boolean } | undefined {
+		if (event.type === "wheel") {
+			const delta = (event.wheelDelta ?? 0) !== 0 ? (event.wheelDelta! > 0 ? 1 : -1) : 0;
+			if (delta !== 0) {
+				if (this.view === "list") {
+					const tasks = this.currentTasks();
+					if (tasks.length > 0) {
+						this.listIndex = Math.min(Math.max(0, tasks.length - 1), this.listIndex + delta);
+						this.clampListOffset(tasks.length);
+						this.invalidateCache();
+						return { handled: true };
+					}
+				} else {
+					const height = this.pageSize();
+					this.follow = false;
+					this.scroll = Math.min(this.maxScroll(height), Math.max(0, this.scroll + delta));
+					this.invalidateCache();
+					return { handled: true };
+				}
+			}
+		}
+		return undefined;
+	}
+
+	private currentTasks(): BgTask[] {
+		const all = this.registry.list();
+		if (this.showHistory) return all;
+		const running = all.filter((t) => t.status === "running");
+		if (running.length === 0 && all.some((t) => t.status !== "running")) {
+			this.showHistory = true;
+			return all;
+		}
+		return running;
+	}
+
+	private activityLabel(task: BgTask): string {
+		if (task.status !== "running") return "";
+		const now = Date.now();
+		const current = task.bytesWritten ?? 0;
+		const prev = this.lastBytesByTask.get(task.id);
+		this.lastBytesByTask.set(task.id, current);
+		if (prev !== undefined && current > prev) {
+			const delta = current - prev;
+			this.recentActivityByTask.set(task.id, { delta, timestamp: now });
+			return `+${formatSize(delta)} ↑`;
+		}
+		const recent = this.recentActivityByTask.get(task.id);
+		if (recent && now - recent.timestamp < 3000) {
+			return `+${formatSize(recent.delta)} ↑`;
+		}
+		return "";
+	}
+
 	private handleListInput(data: string): void {
-		const tasks = this.registry.list();
-		if (matchesKey(data, Key.escape)) {
+		const isStopAll = data === "a" || data === "A" || data === "K";
+		if (!isStopAll) this.confirmStopAllArmed = false;
+		this.actionMessage = undefined;
+
+		const tasks = this.currentTasks();
+		if (matchesKey(data, Key.escape) || data === "q" || data === "x") {
 			this.close();
+			return;
+		}
+		if (data === "h" || data === "H") {
+			this.showHistory = !this.showHistory;
+			this.listIndex = 0;
+			this.listOffset = 0;
+			this.invalidateCache();
 			return;
 		}
 		if (matchesKey(data, Key.up)) {
@@ -78,7 +185,19 @@ class TasksPanel implements Component {
 			this.invalidateCache();
 			return;
 		}
-		if (matchesKey(data, Key.enter)) {
+		if (matchesKey(data, Key.pageUp)) {
+			this.listIndex = Math.max(0, this.listIndex - MAX_LIST_ROWS);
+			this.clampListOffset(tasks.length);
+			this.invalidateCache();
+			return;
+		}
+		if (matchesKey(data, Key.pageDown)) {
+			this.listIndex = Math.min(Math.max(0, tasks.length - 1), this.listIndex + MAX_LIST_ROWS);
+			this.clampListOffset(tasks.length);
+			this.invalidateCache();
+			return;
+		}
+		if (matchesKey(data, Key.enter) || matchesKey(data, Key.right)) {
 			const task = tasks[this.listIndex];
 			if (task) this.openDetail(task);
 			return;
@@ -86,6 +205,23 @@ class TasksPanel implements Component {
 		if (data === "k") {
 			const task = tasks[this.listIndex];
 			if (task) void this.kill(task);
+			return;
+		}
+		if (data === "a" || data === "A" || data === "K") {
+			void this.stopAll();
+			return;
+		}
+		if (data === "R") {
+			const task = tasks[this.listIndex];
+			if (task) void this.rerun(task);
+			return;
+		}
+		if (data === "c" || data === "C") {
+			const task = tasks[this.listIndex];
+			if (task) {
+				this.actionMessage = `Log path: ${task.logPath}`;
+				this.invalidateCache();
+			}
 			return;
 		}
 		if (data === "s") {
@@ -96,7 +232,9 @@ class TasksPanel implements Component {
 
 	private handleDetailInput(data: string): void {
 		const height = this.pageSize();
-		if (matchesKey(data, Key.escape)) {
+		this.actionMessage = undefined;
+
+		if (matchesKey(data, Key.escape) || matchesKey(data, Key.left)) {
 			if (this.detailOnly) { this.close(); return; }
 			this.backToList();
 			return;
@@ -135,6 +273,25 @@ class TasksPanel implements Component {
 			this.follow = true;
 			this.scroll = this.maxScroll(height);
 			this.invalidateCache();
+			return;
+		}
+		if (data === "r") {
+			this.follow = true;
+			void this.reloadLogs();
+			return;
+		}
+		if (data === "R" && this.detailTask) {
+			void this.rerun(this.detailTask);
+			return;
+		}
+		if (data === "k" && this.detailTask) {
+			void this.kill(this.detailTask);
+			return;
+		}
+		if ((data === "c" || data === "C") && this.detailTask) {
+			this.actionMessage = `Log path: ${this.detailTask.logPath}`;
+			this.invalidateCache();
+			return;
 		}
 	}
 
@@ -158,6 +315,7 @@ class TasksPanel implements Component {
 	private openDetail(task: BgTask): void {
 		this.view = "detail";
 		this.detailTask = task;
+		this.seenTaskIds.add(task.id);
 		this.scroll = 0;
 		this.follow = true;
 		this.output = [];
@@ -171,8 +329,58 @@ class TasksPanel implements Component {
 		if (!ok) return;
 		try {
 			await this.registry.kill(task.id, "user kill");
-		} catch {
-			/* registry reports failures through task state */
+			this.actionMessage = `Killed ${task.id}.`;
+		} catch (error) {
+			this.actionMessage = `Kill failed: ${error instanceof Error ? error.message : String(error)}`;
+		}
+		this.invalidateCache();
+	}
+
+	private async stopAll(): Promise<void> {
+		const running = this.registry.list().filter((t) => t.status === "running");
+		if (running.length === 0) {
+			this.actionMessage = "No running tasks to stop.";
+			this.invalidateCache();
+			return;
+		}
+		if (!this.confirmStopAllArmed) {
+			this.confirmStopAllArmed = true;
+			this.actionMessage = `Press a/K again to stop all ${running.length} running task(s).`;
+			this.invalidateCache();
+			return;
+		}
+		this.confirmStopAllArmed = false;
+		this.actionMessage = `Stopping all ${running.length} task(s)...`;
+		this.invalidateCache();
+		if (this.registry.stopAllRunning) {
+			const res = await this.registry.stopAllRunning();
+			this.actionMessage = res.failures.length > 0
+				? `Stopped ${res.stopped}; failures: ${res.failures.join("; ")}`
+				: `Stopped ${res.stopped} task(s).`;
+		} else {
+			await this.registry.disposeAll("stop all");
+			this.actionMessage = `Stopped ${running.length} task(s).`;
+		}
+		this.invalidateCache();
+	}
+
+	private async rerun(task: BgTask): Promise<void> {
+		this.actionMessage = `Rerunning ${task.id}...`;
+		this.invalidateCache();
+		try {
+			let newT: BgTask;
+			if (this.registry.rerun) {
+				newT = await this.registry.rerun(task.id);
+			} else {
+				newT = await this.registry.run(task.command, task.cwd || process.cwd(), {
+					name: task.name,
+					callerType: task.callerType,
+					subagentName: task.subagentName,
+				});
+			}
+			this.actionMessage = `Reran as ${newT.id}.`;
+		} catch (err) {
+			this.actionMessage = `Rerun failed: ${err instanceof Error ? err.message : String(err)}`;
 		}
 		this.invalidateCache();
 	}
@@ -182,8 +390,9 @@ class TasksPanel implements Component {
 		if (input === undefined || input === "") return;
 		try {
 			this.registry.sendInput(task.id, input);
-		} catch {
-			/* task may have finished */
+			this.actionMessage = `Input sent to ${task.id}.`;
+		} catch (error) {
+			this.actionMessage = `Send input failed: ${error instanceof Error ? error.message : String(error)}`;
 		}
 		this.invalidateCache();
 	}
@@ -215,14 +424,19 @@ class TasksPanel implements Component {
 		if (!task || this.busy) return;
 		this.busy = true;
 		try {
-			const text = await this.registry.logs(task.id, LOG_LIMIT);
-			this.output = text.replace(/\n$/, "").split("\n");
-		} catch {
+			const read = await boundedRead(task.logPath, DETAIL_TAIL_BYTES, true);
+			this.output = toOutputLines(read.content);
+			this.tailBytesRead = read.bytesRead;
+			this.tailTotalBytes = read.totalBytes;
+			this.tailTruncated = read.truncated;
+			this.tailError = undefined;
+		} catch (error) {
 			this.output = [];
+			this.tailError = `Log read failed: ${error instanceof Error ? error.message : String(error)}`;
 		} finally {
 			this.busy = false;
 		}
-		if (this.follow) this.scroll = Math.max(0, this.output.length - 1);
+		if (this.follow) this.scroll = Math.max(0, this.output.length - this.pageSize());
 		this.invalidateCache();
 	}
 
@@ -259,43 +473,109 @@ class TasksPanel implements Component {
 	}
 
 	private renderList(width: number): string[] {
-		const tasks = this.registry.list();
+		const tasks = this.currentTasks();
+		const allTasks = this.registry.list();
+		const runningCount = allTasks.filter((t) => t.status === "running").length;
+		const historyCount = allTasks.length - runningCount;
+		const unseenDone = allTasks.filter(
+			(t) => t.status !== "running" && !this.seenTaskIds.has(t.id),
+		).length;
+		const failedCount = allTasks.filter((t) => t.status === "failed").length;
+
+		const subtitleParts: string[] = [];
+		if (this.showHistory) {
+			subtitleParts.push(`${runningCount} active`, `${historyCount} history`);
+		} else {
+			subtitleParts.push(runningCount > 0 ? `${runningCount} active` : "No active tasks");
+		}
+		if (failedCount > 0) subtitleParts.push(`${failedCount} failed`);
+		if (unseenDone > 0) subtitleParts.push(`${unseenDone} unread`);
+		const subtitle = subtitleParts.join(" · ");
+
 		const dim = (text: string): string => this.theme.fg("dim", text);
 		const lines: string[] = [];
-		lines.push(this.theme.fg("accent", "Tasks"));
+		lines.push(`${this.theme.fg("accent", this.theme.bold("Tasks"))} ${dim(`(${subtitle})`)}`);
 		lines.push("");
+
 		if (tasks.length === 0) {
-			lines.push("  No background tasks.");
+			const emptyMsg = allTasks.length === 0
+				? "  No background tasks in this session."
+				: "  No running background tasks. Press h to show recent history.";
+			lines.push(dim(emptyMsg));
 		} else {
 			this.clampListOffset(tasks.length);
 			const visible = tasks.slice(this.listOffset, this.listOffset + MAX_LIST_ROWS);
 			const selected = this.listIndex - this.listOffset;
 			for (let i = 0; i < visible.length; i++) {
-				lines.push(dockRow(visible[i], i === selected, width));
+				const task = visible[i];
+				const isSelected = i === selected;
+				const isUnseen = task.status !== "running" && !this.seenTaskIds.has(task.id);
+				const unreadBadge = isUnseen ? this.theme.fg("warning", "● ") : "  ";
+				const activity = this.activityLabel(task);
+				const actText = activity ? ` ${this.theme.fg("warning", activity)}` : "";
+				const row = dockRow(task, isSelected, width - 4);
+				lines.push(`${unreadBadge}${row}${actText}`);
 			}
 			if (tasks.length > MAX_LIST_ROWS) {
-				lines.push(dim(`  ${this.listOffset + visible.length}/${tasks.length}`));
+				lines.push(dim(`  Showing ${this.listOffset + 1}–${Math.min(tasks.length, this.listOffset + MAX_LIST_ROWS)} of ${tasks.length}`));
 			}
 		}
+
+		if (this.actionMessage) {
+			lines.push("");
+			lines.push(this.theme.fg("warning", `  ${this.actionMessage}`));
+		}
+
 		lines.push("");
-		lines.push(dim(LIST_HINT));
+		const listHint = `↑/↓ select · enter details · k kill · a stop all · h ${this.showHistory ? "hide" : "show"} history · R rerun · c path · s input · esc close`;
+		lines.push(dim(listHint));
 		return lines;
 	}
 
 	private renderDetail(width: number): string[] {
 		const task = this.detailTask ?? this.registry.list()[0];
-		if (!task) return [this.theme.fg("dim", "No background tasks."), "", this.theme.fg("dim", LIST_HINT)];
-		const lines: string[] = detailLines(task, width);
-		lines.push(""); // blank line between "Output" and the content (§4.2)
+		if (!task) {
+			return [this.theme.fg("dim", "No background tasks."), "", this.theme.fg("dim", "esc back")];
+		}
+		const lines: string[] = detailLines(task, width, Date.now(), { showMetadata: true, theme: this.theme });
+		lines.push("");
+
 		const height = DETAIL_VIEWPORT_HEIGHT;
 		const maxScroll = Math.max(0, this.output.length - height);
 		if (this.follow) this.scroll = maxScroll;
 		this.scroll = Math.max(0, Math.min(maxScroll, this.scroll));
 		const visible = this.output.slice(this.scroll, this.scroll + height);
-		lines.push(...visible);
-		if (visible.length === 0) lines.push(this.theme.fg("dim", "(no output)"));
+
+		if (this.tailError) {
+			lines.push(this.theme.fg("error", this.tailError));
+		} else if (visible.length === 0) {
+			lines.push(this.theme.fg("dim", "(no output)"));
+		} else {
+			for (const l of visible) {
+				lines.push(this.theme.fg("toolOutput", truncateToWidth(l, width)));
+			}
+		}
+
 		lines.push("");
-		lines.push(this.theme.fg("dim", DETAIL_HINT));
+		const statusLine = formatOutputStatusLine({
+			follow: this.follow,
+			totalLines: this.output.length,
+			scrollTop: this.scroll,
+			visibleLines: height,
+			bytesRead: this.tailBytesRead,
+			totalBytes: this.tailTotalBytes,
+			truncated: this.tailTruncated,
+		});
+		lines.push(this.theme.fg("dim", statusLine));
+
+		if (this.actionMessage) {
+			lines.push("");
+			lines.push(this.theme.fg("warning", `  ${this.actionMessage}`));
+		}
+
+		lines.push("");
+		const detailHint = "↑/↓ scroll · pgup/pgdown page · ctrl+end bottom · ctrl+home top · r refresh · R rerun · k kill · c path · esc back";
+		lines.push(this.theme.fg("dim", detailHint));
 		return lines;
 	}
 
@@ -312,7 +592,12 @@ export async function openTasksPanel(
 	initialTask?: BgTask,
 	detailOnly = false,
 ): Promise<void> {
-	await ctx.ui.custom<void>((_tui, theme, _keybindings, done) => {
-		return new TasksPanel(theme, registry, ctx.ui, done, initialTask, detailOnly);
+	await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
+		enableTerminalMouse(tui);
+		const onDone = () => {
+			disableTerminalMouse(tui);
+			done();
+		};
+		return new TasksPanel(theme, registry, ctx.ui, onDone, initialTask, detailOnly);
 	});
 }

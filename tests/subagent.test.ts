@@ -124,7 +124,7 @@ test("createBackgroundAwareBashTool tags subagent background tasks", async (t) =
 		subagentName: "worker#1111",
 	});
 
-	const result = await tool.execute("call-1", {
+	const result = await (tool.execute as any)("call-1", {
 		command: "echo 'subagent tool test'",
 		background: true,
 	});

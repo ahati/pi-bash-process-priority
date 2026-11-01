@@ -64,18 +64,20 @@ try {
 
 	// ─── start a background task ─────────────────────────────────────────────
 	await terminal.submit("Start sleep 30 in the background using background=true with taskName e2e-tui. End your turn immediately — do not poll.");
-	const dockVisible = await waitUntil((screen) => screen.includes("e2e-tui") || screen.includes("sleep 30"), 20_000);
+	const DOCK_ROW = /[> ]\s*[●⏳✔✗]\s*\[\d{2}:\d{2}:\d{2}\]/;
+	const dockVisible = await waitUntil((screen) => DOCK_ROW.test(screen) && (screen.includes("e2e-tui") || screen.includes("sleep 30")), 20_000);
 	record("D1: dock row visible with taskName", dockVisible.ok);
 
 	const bgText = await terminal.text();
 	record("D1b: background badge visible", bgText.includes("background"), "");
+	await sleep(500);
 
 	// ─── ↓ enters dock mode ──────────────────────────────────────────────────
 	let dockSelected = { ok: false, screen: "" };
-	for (let attempt = 0; attempt < 3 && !dockSelected.ok; attempt++) {
+	for (let attempt = 0; attempt < 5 && !dockSelected.ok; attempt++) {
 		await terminal.press("down");
 		await sleep(400);
-		dockSelected = await waitUntil((screen) => screen.includes("> ●") || screen.includes(">●"), 1_500, 200);
+		dockSelected = await waitUntil((screen) => screen.includes("> ⏳") || screen.includes(">⏳") || screen.includes("> ●") || screen.includes(">●") || />\s*[●⏳✔✗]\s*\[\d{2}:\d{2}:\d{2}\]/.test(screen), 1_500, 200);
 		if (!dockSelected.ok) await terminal.press("ctrl+u");
 	}
 	record("S1: ↓ shows > selection marker", dockSelected.ok);
@@ -107,24 +109,24 @@ try {
 	// ─── esc from details back to dock ───────────────────────────────────────
 	await terminal.press("escape");
 	await sleep(500);
-	const returnedToDock = await waitUntil((screen) => screen.includes("> ●") || screen.includes(">●") || screen.includes("●"), 5_000);
+	const returnedToDock = await waitUntil((screen) => screen.includes("> ⏳") || screen.includes(">⏳") || screen.includes("> ●") || screen.includes(">●") || screen.includes("●") || screen.includes("⏳"), 5_000);
 	record("D-esc: esc returns from details to dock", returnedToDock.ok);
 
 	// ─── esc from dock back to input ────────────────────────────────────────
 	await terminal.press("escape");
 	await sleep(500);
-	const returnedToInput = await waitUntil((screen) => !screen.includes("> ●"), 5_000);
+	const returnedToInput = await waitUntil((screen) => !screen.includes("> ●") && !screen.includes("> ⏳"), 5_000);
 	record("D-esc2: esc returns to input mode", returnedToInput.ok);
 
 	// ─── ↓ into dock and ↑ back to input (requirement a) ─────────────────────
 	await terminal.press("down");
 	await sleep(500);
-	const inDockAgain = await waitUntil((screen) => screen.includes("> ●") || screen.includes(">●"), 3_000);
+	const inDockAgain = await waitUntil((screen) => screen.includes("> ⏳") || screen.includes(">⏳") || screen.includes("> ●") || screen.includes(">●"), 3_000);
 	record("D-down: ↓ re-enters dock mode", inDockAgain.ok);
 
 	await terminal.press("up");
 	await sleep(500);
-	const upReturnsToInput = await waitUntil((screen) => !screen.includes("> ●"), 3_000);
+	const upReturnsToInput = await waitUntil((screen) => !screen.includes("> ●") && !screen.includes("> ⏳"), 3_000);
 	record("D-up: ↑ on row 0 returns to input mode", upReturnsToInput.ok);
 
 	// ─── down into dock and kill via 'k' ─────────────────────────────────────

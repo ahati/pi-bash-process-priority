@@ -100,7 +100,7 @@ try {
 	await sleep(400);
 	const dockSelected = await waitUntil(
 		terminal,
-		(screen) => screen.includes("> ●") || screen.includes(">●"),
+		(screen) => screen.includes("> ⏳") || screen.includes(">⏳") || screen.includes("> ●") || screen.includes(">●"),
 		3_000,
 	);
 	assert.ok(dockSelected.ok, "Dock selection marker visible");

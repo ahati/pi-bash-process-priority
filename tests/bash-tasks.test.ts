@@ -140,7 +140,7 @@ test("renderCall: does not mutate lines across multiple render passes", async ()
 		const pass2 = component.render(80);
 		assert.deepEqual(pass1, pass2);
 		assert.equal(pass1.length, 1);
-		assert.match(pass1[0], /bash tasks list/);
+		assert.match(pass1[0], /bash tasks.*list/);
 	} finally {
 		await reg.disposeAll();
 	}

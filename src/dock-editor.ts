@@ -11,6 +11,7 @@ import type { EditorTheme } from "@earendil-works/pi-tui";
 import type { BgTask } from "./types.ts";
 import { debugLog } from "./debug.ts";
 import type { DockController } from "./ui/dock.ts";
+import { enableTerminalMouse, parseMouseInput } from "./ui/terminal-mouse.ts";
 
 export class DockEditor extends CustomEditor {
 	readonly dock: DockController;
@@ -28,6 +29,7 @@ export class DockEditor extends CustomEditor {
 	) {
 		super(tui, theme, keybindings, options);
 		this.dock = dock;
+		enableTerminalMouse(this.tui);
 	}
 
 	getTui(): TUI {
@@ -66,6 +68,21 @@ export class DockEditor extends CustomEditor {
 	}
 
 	handleInput(data: string): void {
+		const mouse = parseMouseInput(data);
+		if (mouse.sawMouse) {
+			if (mouse.wheelDelta !== 0) {
+				if (this.dock.isDetail?.()) {
+					this.dock.scrollDetail?.(mouse.wheelDelta);
+					this.tui.requestRender();
+					return;
+				}
+				this.dock.scrollList?.(mouse.wheelDelta);
+				this.tui.requestRender();
+				return;
+			}
+			return;
+		}
+
 		if (!this.dock.inDock()) {
 			// ↓ on an empty editor falls through to the dock when it has rows or detail is open.
 			if (this.isDown(data)) {

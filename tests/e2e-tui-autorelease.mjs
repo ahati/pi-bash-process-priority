@@ -38,8 +38,8 @@ function record(name, ok, detail = "") {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** A dock row: "  ● [HH:MM:SS] <cmd> running · 3s" ("> " prefix when selected). */
-const DOCK_ROW = /[> ]\s*●\s*\[\d{2}:\d{2}:\d{2}\]/;
-const DOCK_ROW_SELECTED = />\s*●\s*\[\d{2}:\d{2}:\d{2}\]/;
+const DOCK_ROW = /[> ]\s*[●⏳✔✗]\s*\[\d{2}:\d{2}:\d{2}\]/;
+const DOCK_ROW_SELECTED = />\s*[●⏳✔✗]\s*\[\d{2}:\d{2}:\d{2}\]/;
 
 async function waitUntil(predicate, timeoutMs, intervalMs = 300) {
 	const deadline = Math.min(Date.now() + timeoutMs, started + HARD_LIMIT_MS);

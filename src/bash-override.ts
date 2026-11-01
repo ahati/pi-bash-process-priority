@@ -24,6 +24,8 @@ import { truncateToWidth } from "@earendil-works/pi-tui";
 import { Type, type Static, type TObject, type TSchema } from "typebox";
 import { buildNiceCommand } from "./nice.ts";
 import type { BgTask, TaskManagerApi } from "./types.ts";
+import { renderBashCall, type BashCallArgs, type BashCallRenderOptions } from "./ui/bash-display.ts";
+import { renderBashResult, type BashRenderTheme, type BashResultRenderOptions } from "./ui/bash-result.ts";
 
 /**
  * Foreground spawn argv (PRD-001/PRD-004): absolute `nice` binary when probed
@@ -55,6 +57,8 @@ export interface BashOverrideDeps {
 	fgTimeoutMax?: number;
 	/** Background timeout cap in seconds (§8 PI_BASH_TIMEOUT_BG_MAX). Default 300. */
 	bgTimeoutMax?: number;
+	/** Optional bash call render options (intentMode, showCommand, maxCommandChars). */
+	renderOptions?: BashCallRenderOptions;
 }
 
 const DEFAULT_LOG_BYTES = 50_000;
@@ -867,52 +871,37 @@ the call for compatible UI renderers.`;
 		}
 	};
 
-	// Expanded (ctrl+o) view shows the resolved working directory (PRD-004 §4.1).
-	const baseRenderCall = builtin.renderCall;
+	// Full self-contained Bash tool call renderer (animated spinner, timer, intent headers,
+	// background badges, redundant cd stripping, and expanded cwd display).
 	const renderCall = (
 		args: BashParams,
 		theme: Parameters<NonNullable<typeof builtin.renderCall>>[1],
 		context: Parameters<NonNullable<typeof builtin.renderCall>>[2],
 	) => {
-		// Junk-safe: models emit literal "null"/"undefined" strings for absent
-		// optionals — those count as absent here too (display-side guard;
-		// execution-side is covered by prepareArguments normalization).
-		const junk = (v: unknown): string => {
-			if (typeof v !== "string") return "";
-			const t = v.trim();
-			return t === "" || t === "null" || t === "undefined" ? "" : t;
-		};
-		const taskActionDisplay = junk(args.taskAction);
-		const managementLine = taskActionDisplay
-			? [truncateToWidth(theme.fg("accent", "bash") + theme.fg("dim", ` tasks ${taskActionDisplay}${junk(args.taskId) ? ` ${junk(args.taskId)}` : ""}`), context.expanded ? Number.MAX_SAFE_INTEGER : 200)]
-			: undefined;
-		const base = managementLine ? undefined : baseRenderCall?.(args as { command: string }, theme, context);
-		if (!base) {
-			return {
-				invalidate() {},
-				render(width: number): string[] {
-					const out = managementLine ? [...managementLine] : [];
-					if (!managementLine) {
-						const effectiveCwd = args.cwd?.trim() ? args.cwd : context.cwd || cwd;
-						if (context.expanded && effectiveCwd) {
-							out.push(truncateToWidth(theme.fg("dim", `cwd: ${effectiveCwd}`), width));
-						}
-					}
-					return out.map((line) => truncateToWidth(line, width));
-				},
-			};
-		}
-		const effectiveCwd = args.cwd?.trim() ? args.cwd : context.cwd || cwd;
-		return {
-			invalidate() {
-				base.invalidate?.();
+		return renderBashCall(
+			args as BashCallArgs,
+			theme,
+			context as Parameters<typeof renderBashCall>[2],
+			deps.renderOptions ?? {
+				intentMode: (process.env.PI_BASH_INTENT_MODE as BashCallRenderOptions["intentMode"]) || "render",
 			},
-			render(width: number): string[] {
-				const lines = base.render(width);
-				if (!context.expanded) return lines;
-				return [...lines, truncateToWidth(theme.fg("dim", `cwd: ${effectiveCwd}`), width)];
-			},
-		};
+		);
+	};
+
+	// Full self-contained Bash tool result renderer (streaming live preview,
+	// background task formatting, error results, quiet command detection, and truncation hints).
+	const renderResult = (
+		result: Record<string, unknown>,
+		options: BashResultRenderOptions,
+		theme: BashRenderTheme,
+		context?: unknown,
+	) => {
+		return renderBashResult(
+			result,
+			options,
+			theme,
+			context as Parameters<typeof renderBashResult>[3],
+		);
 	};
 
 	return {
@@ -921,6 +910,7 @@ the call for compatible UI renderers.`;
 		description: amendedDescription,
 		prepareArguments: (args: unknown) => normalizeBashArgs(args) as unknown,
 		renderCall,
+		renderResult,
 		execute: ourExecute,
 	} as unknown as ToolDefinition;
 }

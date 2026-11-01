@@ -10,6 +10,7 @@ import { closeSync, mkdirSync, openSync, writeSync } from "node:fs";
 import { open, stat } from "node:fs/promises";
 import { join } from "node:path";
 
+import { boundedRead, MAX_OUTPUT_BYTES } from "./log-reader.ts";
 import { escapeSingleQuotes } from "./nice.ts";
 import type {
 	BgTask,
@@ -140,6 +141,7 @@ class TaskManager implements TaskManagerApi {
 	async run(command: string, cwd: string, options: RunOptions = {}): Promise<BgTask> {
 		const rec = this.createRecord({
 			command,
+			cwd,
 			origin: "bg_task",
 			name: options.name,
 			callerType: options.callerType,
@@ -206,6 +208,7 @@ class TaskManager implements TaskManagerApi {
 	): BgTask {
 		const rec = this.createRecord({
 			command: handle.command,
+			cwd: handle.cwd,
 			origin: "foreground-adopted",
 			name: opts.name,
 			callerType: opts.callerType,
@@ -295,25 +298,45 @@ class TaskManager implements TaskManagerApi {
 		const rec = this.findRecord(idOrPrefix);
 		const cap = Math.max(1, Math.floor(maxBytes ?? this.logBytes));
 		try {
-			const info = await stat(rec.task.logPath);
-			const start = Math.max(0, info.size - cap);
-			const length = info.size - start;
-			if (length <= 0) return rec.memory;
-			const buf = Buffer.alloc(length);
-			const fh = await open(rec.task.logPath, "r");
-			let bytesRead = 0;
-			try {
-				bytesRead = (await fh.read(buf, 0, length, start)).bytesRead;
-			} finally {
-				await fh.close();
+			const read = await boundedRead(rec.task.logPath, cap, true);
+			if (read.totalBytes === 0 && rec.memory) {
+				return rec.memoryTruncated
+					? `[Full output: ${rec.task.logPath}]\n${rec.memory}`
+					: rec.memory;
 			}
-			const tail = buf.subarray(0, bytesRead).toString("utf8");
-			return start > 0 ? `[Full output: ${rec.task.logPath}]\n${tail}` : tail;
+			const tail = read.content;
+			return read.truncated ? `[Full output: ${rec.task.logPath}]\n${tail}` : tail;
 		} catch {
 			return rec.memoryTruncated
 				? `[Full output: ${rec.task.logPath}]\n${rec.memory}`
 				: rec.memory;
 		}
+	}
+
+	async rerun(idOrPrefix: string): Promise<BgTask> {
+		const task = this.findRecord(idOrPrefix).task;
+		return this.run(task.command, task.cwd || process.cwd(), {
+			name: task.name,
+			callerType: task.callerType,
+			subagentName: task.subagentName,
+		});
+	}
+
+	async stopAllRunning(): Promise<{ stopped: number; failures: string[] }> {
+		const running = [...this.records.values()].filter(
+			(rec) => rec.task.status === "running",
+		);
+		let stopped = 0;
+		const failures: string[] = [];
+		for (const rec of running) {
+			try {
+				await this.kill(rec.task.id, "stop all");
+				stopped++;
+			} catch (error) {
+				failures.push(`${rec.task.id}: ${error instanceof Error ? error.message : String(error)}`);
+			}
+		}
+		return { stopped, failures };
 	}
 
 	rebuild(tasks: BgTask[]): void {
@@ -374,6 +397,7 @@ class TaskManager implements TaskManagerApi {
 
 	private createRecord(input: {
 		command: string;
+		cwd?: string;
 		origin: BgTask["origin"];
 		name?: string;
 		callerType?: "agent" | "subagent";
@@ -389,6 +413,7 @@ class TaskManager implements TaskManagerApi {
 		const task: BgTask = {
 			id,
 			command: input.command,
+			cwd: input.cwd,
 			origin: input.origin,
 			status: "running",
 			pid: input.pid,
@@ -398,6 +423,7 @@ class TaskManager implements TaskManagerApi {
 			exitCode: null,
 			signal: null,
 			logPath: join(this.logDir, logFileName),
+			bytesWritten: 0,
 		};
 		if (input.name !== undefined) task.name = input.name;
 		if (input.callerType !== undefined) task.callerType = input.callerType;
@@ -447,6 +473,23 @@ class TaskManager implements TaskManagerApi {
 
 	private appendLog(rec: TaskRecord, chunk: string | Buffer): void {
 		const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+		const byteCount = typeof chunk === "string" ? Buffer.byteLength(chunk, "utf8") : chunk.length;
+		rec.task.bytesWritten = (rec.task.bytesWritten ?? 0) + byteCount;
+
+		// Check runaway output cap (20 MiB default)
+		if (rec.task.bytesWritten > MAX_OUTPUT_BYTES && !rec.finalized && !rec.killRequested) {
+			rec.killRequested = true;
+			rec.task.reason = "output cap reached";
+			const capNotice = `\n[error] Output cap reached: exceeded ${MAX_OUTPUT_BYTES} bytes. Task killed.\n`;
+			const fd = this.openLog(rec);
+			if (fd !== undefined) {
+				try { writeSync(fd, capNotice); } catch { /* ignore */ }
+			}
+			this.signalGroup(rec, "SIGKILL");
+			this.finalize(rec, null, "SIGKILL");
+			return;
+		}
+
 		const fd = this.openLog(rec);
 		if (fd !== undefined) {
 			try {

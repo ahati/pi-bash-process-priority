@@ -52,9 +52,67 @@ export function formatDuration(ms: number): string {
 	return `${seconds}s`;
 }
 
+/** Human-readable byte size formatted as B, KB, or MB. */
+export function formatSize(bytes: number): string {
+	if (!Number.isFinite(bytes) || bytes <= 0) return "0B";
+	if (bytes < 1024) return `${bytes}B`;
+	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+	return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
+
+/** Runtime duration of a task. */
+export function taskAge(task: BgTask, nowMs = Date.now()): string {
+	return formatDuration((task.endedAt ?? nowMs) - task.startedAt);
+}
+
+/**
+ * Dynamic output status line below the tail viewer (from pi-background-tasks).
+ */
+export function formatOutputStatusLine(options: {
+	follow: boolean;
+	totalLines: number;
+	scrollTop: number;
+	visibleLines: number;
+	bytesRead: number;
+	totalBytes: number;
+	truncated: boolean;
+}): string {
+	const { follow, totalLines, scrollTop, visibleLines, bytesRead, totalBytes, truncated } = options;
+	if (!follow && totalLines > 0) {
+		const maxTop = Math.max(0, totalLines - visibleLines);
+		const start = Math.min(scrollTop, maxTop);
+		const end = Math.min(totalLines, start + visibleLines);
+		return `lines ${start + 1}–${end} of ${totalLines} · ↑/↓ PgUp/PgDn scroll · ↓ at bottom follows`;
+	}
+	const suffix = truncated ? ` of ${formatSize(totalBytes)}` : "";
+	return `following tail ${formatSize(bytesRead)}${suffix} · ↑ scroll`;
+}
+
 // ---------------------------------------------------------------------------
 // Status vocabulary & colors
 // ---------------------------------------------------------------------------
+
+/**
+ * Status prefix icon (§4.1):
+ * - running: sand-clock ⏳
+ * - completed: green tick ✔
+ * - failed/killed: red cross ✗
+ */
+export function taskStatusIcon(
+	task: BgTask,
+	theme?: { fg: (color: any, text: string) => string },
+): string {
+	if (task.status === "running") {
+		const icon = "⏳";
+		return theme ? theme.fg("warning", icon) : icon;
+	}
+	if (task.status === "completed" && (task.exitCode === null || task.exitCode === undefined || task.exitCode === 0)) {
+		const icon = "✔";
+		return theme ? theme.fg("success", icon) : icon;
+	}
+	const icon = "✗";
+	return theme ? theme.fg("error", icon) : icon;
+}
 
 /** "running" | "completed" | "failed" | "killed" (§4.4). */
 export function statusWord(status: BgTaskStatus): string {
@@ -112,20 +170,33 @@ function terminalSuffix(task: BgTask): string {
 }
 
 /**
- * One dock row: `"  ● [HH:MM:SS] cmd running"` or `"> ● …"` when selected.
- * The command is truncated to leave room for the status tail (width-24), then
- * the whole line passes through `truncateToWidth` (§7.8).
+ * One dock row: `"  ⏳ [HH:MM:SS] cmd running"` or `"> ⏳ …"` when selected.
+ * Prefixed with sand-clock ⏳, green tick ✔, or red cross ✗ based on task status.
  */
-export function dockRow(task: BgTask, selected: boolean, width: number, nowMs?: number): string {
+export function dockRow(
+	task: BgTask,
+	selected: boolean,
+	width: number,
+	nowMs?: number,
+	theme?: { fg: (color: any, text: string) => string },
+): string {
 	const lead = selected ? "> " : "  ";
-	const prefix = `${lead}${BULLET} [${formatClock(task.startedAt)}] `;
+	const icon = taskStatusIcon(task, theme);
+	const prefix = `${lead}${icon} [${formatClock(task.startedAt)}] `;
 	const commandWidth = Math.max(1, width - 24);
 	const command = truncateToWidth(singleLine(task.command), commandWidth);
 	// Live elapsed time for running tasks (PRD-004 §4.1): the 1 s dock ticker
 	// supplies nowMs so the duration ticks up on screen.
 	const elapsed =
 		task.status === "running" && nowMs !== undefined ? ` · ${formatDuration(Math.max(0, nowMs - task.startedAt))}` : "";
-	const line = `${prefix}${command} ${statusWord(task.status)}${terminalSuffix(task)}${elapsed}`;
+	const isErr =
+		task.status === "failed" ||
+		task.status === "killed" ||
+		(task.exitCode !== null && task.exitCode !== undefined && task.exitCode !== 0);
+	const statusColor = isErr ? "error" : "success";
+	const rawStatus = `${statusWord(task.status)}${terminalSuffix(task)}`;
+	const statusPart = theme ? theme.fg(statusColor, rawStatus) : rawStatus;
+	const line = `${prefix}${command} ${statusPart}${elapsed}`;
 	return truncateToWidth(line, width);
 }
 
@@ -145,35 +216,77 @@ export function footerSegment(runningCount: number): string {
 // Task Details (§4.2, §7.8)
 // ---------------------------------------------------------------------------
 
+export interface DetailLinesOptions {
+	showMetadata?: boolean;
+	theme?: {
+		fg: (color: any, text: string) => string;
+		bold?: (text: string) => string;
+	};
+}
+
 /**
- * Task Details header block. The status line carries the bullet + word; the
- * component colors it with `statusColorToken`. `Type` is always "Agent" in v1.
+ * Task Details header block.
+ * - LHS labels: "Command:", "Status:", "Type:", "Started:" in distinct colors.
+ * - Status RHS: red or green based on status (error/failure/killed = red, running/completed = green).
  */
-export function detailLines(task: BgTask, width: number, nowMs?: number): string[] {
+export function detailLines(
+	task: BgTask,
+	width: number,
+	nowMs?: number,
+	options?: DetailLinesOptions,
+): string[] {
+	const theme = options?.theme;
+	const colorLhs = (color: string, label: string) => (theme ? theme.fg(color, label) : label);
+
 	const elapsed =
 		task.status === "running" && nowMs !== undefined
 			? ` · ${formatDuration(Math.max(0, nowMs - task.startedAt))}`
 			: task.endedAt !== null
 				? ` · ${formatDuration(Math.max(0, task.endedAt - task.startedAt))}`
 				: "";
-	const status = `Status:  ${BULLET} ${statusWord(task.status)}${elapsed}`;
-	const started = `Started: ${formatTimestamp(task.startedAt)}`;
-	const rule = RULE_CHAR.repeat(Math.max(0, width));
-	const typeLine =
+
+	const isErr =
+		task.status === "failed" ||
+		task.status === "killed" ||
+		(task.exitCode !== null && task.exitCode !== undefined && task.exitCode !== 0);
+	const statusColor = isErr ? "error" : "success";
+
+	const icon = taskStatusIcon(task, theme);
+	const statusWordText = statusWord(task.status);
+	const statusSuffix = terminalSuffix(task);
+	const statusRhsContent = `${statusWordText}${statusSuffix}${elapsed}`;
+	const statusRhs = theme ? `${icon} ${theme.fg(statusColor, statusRhsContent)}` : `${icon} ${statusRhsContent}`;
+
+	const cmdLabel = colorLhs("accent", "Command:");
+	const statusLabel = colorLhs("warning", "Status:");
+	const typeLabel = colorLhs("toolTitle", "Type:");
+	const startedLabel = colorLhs("muted", "Started:");
+
+	const typeVal =
 		task.callerType === "subagent"
-			? `Type:    Subagent${task.subagentName ? ` (${task.subagentName})` : ""}`
-			: "Type:    Agent";
+			? `Subagent${task.subagentName ? ` (${task.subagentName})` : ""}`
+			: "Agent";
+
 	const lines = [
-		"Task Details",
+		theme?.bold ? theme.bold("Task Details") : "Task Details",
 		"",
-		`Command: ${singleLine(task.command)}`,
-		status,
-		typeLine,
-		started,
-		"",
-		rule,
-		"Output",
+		`${cmdLabel} ${singleLine(task.command)}`,
+		`${statusLabel}  ${statusRhs}`,
+		`${typeLabel}    ${typeVal}`,
+		`${startedLabel} ${formatTimestamp(task.startedAt)}`,
 	];
+	if (options?.showMetadata) {
+		const pidLabel = colorLhs("dim", "PID:");
+		const exitLabel = colorLhs("dim", "Exit:");
+		const outputLabel = colorLhs("dim", "Output:");
+		const sizeLabel = colorLhs("dim", "Size:");
+		if (task.pid) lines.push(`${pidLabel}     ${task.pid}`);
+		if (task.exitCode !== null && task.exitCode !== undefined) lines.push(`${exitLabel}    ${task.exitCode}`);
+		if (task.logPath) lines.push(`${outputLabel}  ${task.logPath}`);
+		if (task.bytesWritten) lines.push(`${sizeLabel}    ${formatSize(task.bytesWritten)}`);
+	}
+	const rule = RULE_CHAR.repeat(Math.max(0, width));
+	lines.push("", rule, "Output");
 	return lines.map((line) => truncateToWidth(line, width));
 }
 

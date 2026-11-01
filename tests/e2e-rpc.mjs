@@ -140,7 +140,7 @@ async function scenario1_startupAndSchema() {
 
 	const commands = await rpc({ type: "get_commands" });
 	const commandNames = JSON.stringify(commands.data ?? commands);
-	record("E2E-1b /tasks command registered", commandNames.includes("tasks"), "");
+	record("E2E-1b /tasks command not registered (removed)", !commandNames.includes('"tasks"') && !commandNames.includes('"name":"tasks"'), "");
 
 	const noErrors = !events.some((e) => e.type === "extension_error");
 	record("E2E-1c no extension errors at startup", noErrors, events.filter((e) => e.type === "extension_error").map((e) => e.error).join("; "));
@@ -278,7 +278,7 @@ async function scenario6_degradation() {
 
 	await drpc({ type: "get_commands" });
 	const commands = await drpc({ type: "get_commands" });
-	record("E2E-6a /tasks registered (kill switch removed)", JSON.stringify(commands.data ?? "").includes("tasks"));
+	record("E2E-6a /tasks not registered (kill switch removed)", !JSON.stringify(commands.data ?? "").includes('"tasks"'));
 
 	await drpc({ type: "bash", command: "echo alive" });
 	record("E2E-6b RPC bash executes (no priority transport)", true);
