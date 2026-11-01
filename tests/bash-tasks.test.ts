@@ -145,3 +145,54 @@ test("renderCall: does not mutate lines across multiple render passes", async ()
 		await reg.disposeAll();
 	}
 });
+
+test("createBackgroundTaskTool: launches background task directly", async () => {
+	const { createBackgroundTaskTool } = await import("../src/bash-override.ts");
+	const reg = createTaskManager({ logDir: "/tmp/bg-tests-launch", killGraceMs: 100, logBytes: 4096, maxFinished: 5 });
+	try {
+		const bgTool = createBackgroundTaskTool("/tmp", {
+			registry: reg,
+			fgNice: 10,
+		});
+		const result = await (bgTool.execute as any)("call-bg-1", {
+			command: "sleep 2",
+			taskName: "direct-bg-job",
+		});
+		assert.equal(result.isError, false);
+		const details = result.details as any;
+		assert.equal(details.id, "task-1");
+		assert.equal(details.name, "direct-bg-job");
+		assert.match(result.content[0].text, /task id: task-1/);
+		assert.equal(reg.get("task-1")?.status, "running");
+	} finally {
+		await reg.disposeAll();
+	}
+});
+
+test("createManageBackgroundTaskTool: handles list, status, and kill directly", async () => {
+	const { createManageBackgroundTaskTool } = await import("../src/bash-override.ts");
+	const reg = createTaskManager({ logDir: "/tmp/bg-tests-manage", killGraceMs: 100, logBytes: 4096, maxFinished: 5 });
+	try {
+		await reg.run("sleep 5", "/tmp", { name: "target-proc" });
+		const manageTool = createManageBackgroundTaskTool({
+			registry: reg,
+			fgNice: 10,
+		});
+
+		const listRes = await (manageTool.execute as any)("call-m-1", { action: "list" });
+		assert.equal(listRes.isError, false);
+		assert.match(listRes.content[0].text, /task-1/);
+		assert.match(listRes.content[0].text, /sleep 5/);
+
+		const statusRes = await (manageTool.execute as any)("call-m-2", { action: "status", taskId: "task-1" });
+		assert.equal(statusRes.isError, false);
+		assert.match(statusRes.content[0].text, /task-1/);
+
+		const killRes = await (manageTool.execute as any)("call-m-3", { action: "kill", taskId: "task-1" });
+		assert.equal(killRes.isError, false);
+		assert.match(killRes.content[0].text, /Killed task-1/);
+		assert.equal(reg.get("task-1")?.status, "killed");
+	} finally {
+		await reg.disposeAll();
+	}
+});

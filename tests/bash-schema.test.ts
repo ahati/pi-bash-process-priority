@@ -1,147 +1,159 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { Check } from "typebox/value";
-import { createBackgroundAwareBashTool, normalizeBashArgs } from "../src/bash-override.ts";
+import {
+	createForegroundBashTool,
+	createBackgroundTaskTool,
+	createManageBackgroundTaskTool,
+	normalizeBashArgs,
+	normalizeBackgroundTaskArgs,
+	normalizeManageBackgroundTaskArgs,
+} from "../src/bash-override.ts";
 import { createTaskManager } from "../src/registry.ts";
 
-/**
- * The bash tool has exactly one entry point per call (PRD-004 §4.1):
- *
- *   command                              → execute
- *   taskAction: list | adopt             → manage, no target
- *   taskAction: status | kill  + taskId  → manage, one target
- *   taskAction: input          + taskId + input → manage, one target + stdin
- *
- * Both `command` and `taskAction` are `Type.Optional` on the individual
- * properties — JSON Schema property optionality cannot express "one of these",
- * and making either one root-required would make the other mode uncallable.
- * The requirement is declared once per variant and projected into the root
- * `oneOf`, which pi's TypeBox validator enforces before `execute` runs.
- */
-function schemaOf() {
-	const registry = createTaskManager({ logDir: "/tmp/schema-tests", killGraceMs: 100, logBytes: 4096, maxFinished: 10 });
-	const tool = createBackgroundAwareBashTool("/tmp", {
+function createTools() {
+	const registry = createTaskManager({
+		logDir: "/tmp/schema-tests",
+		killGraceMs: 100,
+		logBytes: 4096,
+		maxFinished: 10,
+	});
+	const deps = {
 		registry,
 		fgNice: 10,
 		fgTimeoutMax: 60,
 		bgTimeoutMax: 300,
-	}) as unknown as { parameters: Record<string, unknown> };
-	return tool.parameters;
+	};
+	const bashTool = createForegroundBashTool("/tmp", deps) as unknown as { parameters: Record<string, unknown> };
+	const bgTool = createBackgroundTaskTool("/tmp", deps, "background_task") as unknown as {
+		parameters: Record<string, unknown>;
+	};
+	const manageTool = createManageBackgroundTaskTool(deps, "manage_background_task") as unknown as {
+		parameters: Record<string, unknown>;
+	};
+	return { bash: bashTool.parameters, backgroundTask: bgTool.parameters, manageBackgroundTask: manageTool.parameters };
 }
 
 const valid = (schema: Record<string, unknown>, value: unknown): boolean => Check(schema, value);
 
-test("bash schema: root stays object-shaped with the full property map", () => {
-	const schema = schemaOf();
-	assert.equal(schema.type, "object");
-	// pi's Anthropic adapter rebuilds input_schema from schema.properties, so the
-	// properties must live at the root — not inside a top-level union.
-	const properties = schema.properties as Record<string, unknown>;
-	assert.deepEqual(Object.keys(properties).sort(), [
-		"background",
-		"command",
-		"cwd",
-		"input",
-		"intent",
-		"taskAction",
-		"taskId",
-		"taskName",
-		"timeout",
-		"tool",
-	]);
-	assert.equal(schema.required, undefined, "no entry point is unconditionally required");
+// ─── 1. bash (Foreground) Schema ─────────────────────────────────────────────
+
+test("bash schema: root stays object-shaped with foreground execution properties", () => {
+	const { bash } = createTools();
+	assert.equal(bash.type, "object");
+	const properties = bash.properties as Record<string, unknown>;
+	assert.deepEqual(Object.keys(properties).sort(), ["command", "cwd", "intent", "timeout", "tool"]);
+	assert.deepEqual(bash.required, ["command"]);
 });
 
 test("bash schema: every property keeps its model-facing description", () => {
-	const schema = schemaOf();
-	const properties = schema.properties as Record<string, Record<string, unknown>>;
+	const { bash } = createTools();
+	const properties = bash.properties as Record<string, Record<string, unknown>>;
 	for (const [key, property] of Object.entries(properties)) {
-		// taskAction documents each action on its own const branch.
-		const described =
-			typeof property.description === "string" ||
-			(Array.isArray(property.anyOf) && property.anyOf.every((branch) => typeof (branch as { description?: string }).description === "string"));
-		assert.ok(described, `property "${key}" lost its description`);
+		assert.ok(typeof property.description === "string", `property "${key}" lost its description`);
 	}
-	// The pinned union keeps the management summary on the property itself.
-	assert.match(String(properties.taskAction?.description ?? ""), /Manage background tasks/);
 });
 
-test("bash schema: oneOf declares each entry point with its required parameters", () => {
-	const schema = schemaOf();
-	const branches = schema.oneOf as Array<{ required: string[]; properties?: { taskAction?: { const?: string } } }>;
-	const requiredSets = branches.map((branch) => `${branch.properties?.taskAction?.const ?? "command"}:${branch.required.join("+")}`);
-	assert.deepEqual(requiredSets, [
-		"command:command",
-		"list:taskAction",
-		"status:taskAction+taskId",
-		"kill:taskAction+taskId",
-		"input:taskAction+taskId+input",
-		"adopt:taskAction",
-	]);
+test("bash schema: command is required, execution options are optional", () => {
+	const { bash } = createTools();
+	assert.equal(valid(bash, {}), false, "missing command must fail");
+	assert.equal(valid(bash, { timeout: 10 }), false, "missing command must fail");
+	assert.equal(valid(bash, { command: "ls -la" }), true);
+	assert.equal(valid(bash, { command: "ls -la", timeout: 15, cwd: "/tmp", intent: "list directory", tool: "ls" }), true);
 });
 
-test("bash schema: exactly one entry point — neither and both are invalid", () => {
-	const schema = schemaOf();
-	assert.equal(valid(schema, {}), false);
-	assert.equal(valid(schema, { background: true }), false);
-	assert.equal(valid(schema, { timeout: 5, taskName: "x" }), false);
-	assert.equal(valid(schema, { command: "ls", taskAction: "list" }), false);
-	assert.equal(valid(schema, { command: "ls", taskAction: "status" }), false);
-	assert.equal(valid(schema, { command: "ls", taskAction: "status", taskId: "task-1" }), false);
-	assert.equal(valid(schema, { command: "ls", taskAction: "kill" }), false);
-	assert.equal(valid(schema, { command: "ls", taskAction: "kill", taskId: "task-1" }), false);
-	assert.equal(valid(schema, { command: "ls", taskAction: "adopt" }), false);
-	assert.equal(valid(schema, { command: "ls", taskAction: "input", taskId: "task-1", input: "y" }), false);
-	assert.equal(valid(schema, { command: "ls" }), true);
+// ─── 2. background_task Schema ──────────────────────────────────────────────
+
+test("background_task schema: root stays object-shaped with background properties", () => {
+	const { backgroundTask } = createTools();
+	assert.equal(backgroundTask.type, "object");
+	const properties = backgroundTask.properties as Record<string, unknown>;
+	assert.deepEqual(Object.keys(properties).sort(), ["command", "cwd", "intent", "taskName", "timeout", "tool"]);
+	assert.deepEqual(backgroundTask.required, ["command"]);
+});
+
+test("background_task schema: command is required, taskName and timeout are optional", () => {
+	const { backgroundTask } = createTools();
+	assert.equal(valid(backgroundTask, {}), false, "missing command must fail");
+	assert.equal(valid(backgroundTask, { taskName: "server" }), false, "missing command must fail");
+	assert.equal(valid(backgroundTask, { command: "npm start" }), true);
 	assert.equal(
-		valid(schema, {
-			command: "ls",
-			timeout: 10,
-			background: true,
-			taskName: "test",
-			cwd: "/tmp",
-			intent: "list files",
-			tool: "ls",
+		valid(backgroundTask, {
+			command: "npm start",
+			taskName: "dev-server",
+			timeout: 300,
+			cwd: "/workspace",
 		}),
 		true,
 	);
 });
 
-test("bash schema: taskId is mandatory for status/kill/input, not for list/adopt", () => {
-	const schema = schemaOf();
-	assert.equal(valid(schema, { taskAction: "list" }), true);
-	assert.equal(valid(schema, { taskAction: "adopt" }), true);
+// ─── 3. manage_background_task Schema ───────────────────────────────────────
 
-	assert.equal(valid(schema, { taskAction: "status", taskId: "task-7" }), true);
-	assert.equal(valid(schema, { taskAction: "status" }), false);
-	assert.equal(valid(schema, { taskAction: "kill", taskId: "task-7" }), true);
-	assert.equal(valid(schema, { taskAction: "kill" }), false);
-	assert.equal(valid(schema, { taskAction: "input", taskId: "task-7", input: "y\n" }), true);
-	assert.equal(valid(schema, { taskAction: "input" }), false);
+test("manage_background_task schema: root is object-shaped and requires action", () => {
+	const { manageBackgroundTask } = createTools();
+	assert.equal(manageBackgroundTask.type, "object");
+	const properties = manageBackgroundTask.properties as Record<string, unknown>;
+	assert.deepEqual(Object.keys(properties).sort(), ["action", "input", "lines", "taskId"]);
+	assert.deepEqual(manageBackgroundTask.required, ["action"]);
 });
 
-test("bash schema: input text is mandatory for taskAction 'input'", () => {
-	const schema = schemaOf();
-	assert.equal(valid(schema, { taskAction: "input", taskId: "task-7" }), false);
-	assert.equal(valid(schema, { taskAction: "input", taskId: "task-7", input: "yes\n" }), true);
+test("manage_background_task schema: validates all supported actions", () => {
+	const { manageBackgroundTask } = createTools();
+	assert.equal(valid(manageBackgroundTask, {}), false, "missing action must fail");
+	assert.equal(valid(manageBackgroundTask, { action: "unknown" }), false, "unknown action must fail");
+
+	assert.equal(valid(manageBackgroundTask, { action: "list" }), true);
+	assert.equal(valid(manageBackgroundTask, { action: "adopt" }), true);
+	assert.equal(valid(manageBackgroundTask, { action: "status", taskId: "task-1" }), true);
+	assert.equal(valid(manageBackgroundTask, { action: "logs", taskId: "task-1", lines: 20 }), true);
+	assert.equal(valid(manageBackgroundTask, { action: "kill", taskId: "task-1" }), true);
+	assert.equal(valid(manageBackgroundTask, { action: "input", taskId: "task-1", input: "y\n" }), true);
 });
 
-test("bash schema: unknown taskAction is rejected", () => {
-	const schema = schemaOf();
-	assert.equal(valid(schema, { taskAction: "restart" }), false);
-	assert.equal(valid(schema, { taskAction: "restart", taskId: "task-1" }), false);
+// ─── 4. Argument Normalization Across Tools ─────────────────────────────────
+
+test("normalizeBashArgs: empty and literal null/undefined are dropped", () => {
+	const normalized = normalizeBashArgs({
+		command: "echo test",
+		cwd: "",
+		timeout: "30",
+		intent: "null",
+		tool: "undefined",
+	});
+	assert.equal(normalized.command, "echo test");
+	assert.equal(normalized.timeout, 30);
+	assert.equal("cwd" in normalized, false);
+	assert.equal("intent" in normalized, false);
+	assert.equal("tool" in normalized, false);
 });
 
-test("bash schema: junk-only args normalize to {} and are then schema-invalid", () => {
-	const schema = schemaOf();
-	const normalized = normalizeBashArgs({ command: "null", taskAction: "undefined", cwd: "" });
-	assert.deepEqual(normalized, {});
-	assert.equal(valid(schema, normalized), false, "a normalized-away call must not validate");
+test("normalizeBackgroundTaskArgs: normalizes command, taskName, timeout", () => {
+	const normalized = normalizeBackgroundTaskArgs({
+		command: "npm run dev",
+		taskName: "dev",
+		timeout: "120",
+		cwd: "   ",
+	});
+	assert.equal(normalized.command, "npm run dev");
+	assert.equal(normalized.taskName, "dev");
+	assert.equal(normalized.timeout, 120);
+	assert.equal("cwd" in normalized, false);
 });
 
-test("bash schema: junk taskId is normalized away, so status then fails like a missing taskId", () => {
-	const schema = schemaOf();
-	const normalized = normalizeBashArgs({ taskAction: "status", taskId: "null" });
-	assert.equal("taskId" in normalized, false);
-	assert.equal(valid(schema, normalized), false);
+test("normalizeManageBackgroundTaskArgs: maps taskAction to action and normalizes fields", () => {
+	const fromTaskAction = normalizeManageBackgroundTaskArgs({
+		taskAction: "status",
+		taskId: "task-5",
+		lines: "50",
+	});
+	assert.equal(fromTaskAction.action, "status");
+	assert.equal(fromTaskAction.taskId, "task-5");
+	assert.equal(fromTaskAction.lines, 50);
+
+	const unknownAction = normalizeManageBackgroundTaskArgs({
+		action: "restart",
+		taskId: "task-1",
+	});
+	assert.equal("action" in unknownAction, false);
 });

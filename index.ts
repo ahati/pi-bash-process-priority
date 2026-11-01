@@ -33,6 +33,9 @@ import { debugLog, debugLogError, initDebugLog } from "./src/debug.ts";
 import { createTaskManager } from "./src/registry.ts";
 import {
 	createBackgroundAwareBashTool,
+	createForegroundBashTool,
+	createBackgroundTaskTool,
+	createManageBackgroundTaskTool,
 	getForeground,
 	getSharedOperations,
 	requestBackground,
@@ -331,20 +334,25 @@ export default function (pi: ExtensionAPI) {
 			// Rebuild is best-effort; a fresh empty registry is fine.
 		}
 
-		// Take over the built-in bash tool + register bg_task (§7.1, §7.5).
+		// Take over the built-in bash tool + register background_task and manage_background_task (+ aliases).
 		try {
-			pi.registerTool(
-				createBackgroundAwareBashTool(ctx.cwd, {
-					registry,
-					fgNice,
-					callerType: isSubagentRuntime ? "subagent" : "agent",
-					subagentName,
-					logBytes: bg.logBytes,
-					killGraceMs: bg.killGraceMs,
-					fgTimeoutMax: bg.fgTimeoutMax,
-					bgTimeoutMax: bg.bgTimeoutMax,
-				}),
-			);
+			const callerType: "agent" | "subagent" = isSubagentRuntime ? "subagent" : "agent";
+			const toolDeps = {
+				registry,
+				fgNice,
+				callerType,
+				subagentName,
+				logBytes: bg.logBytes,
+				killGraceMs: bg.killGraceMs,
+				fgTimeoutMax: bg.fgTimeoutMax,
+				bgTimeoutMax: bg.bgTimeoutMax,
+			};
+
+			pi.registerTool(createForegroundBashTool(ctx.cwd, toolDeps));
+			pi.registerTool(createBackgroundTaskTool(ctx.cwd, toolDeps, "background_task"));
+			pi.registerTool(createBackgroundTaskTool(ctx.cwd, toolDeps, "backgroundTask"));
+			pi.registerTool(createManageBackgroundTaskTool(toolDeps, "manage_background_task"));
+			pi.registerTool(createManageBackgroundTaskTool(toolDeps, "manageBackgroundTask"));
 			overrideActive = true;
 		} catch (error) {
 			// Fail back to the PRD-001 hook path entirely.

@@ -303,3 +303,106 @@ export function renderBashResult(
 	}
 	return rendered;
 }
+
+export function renderBackgroundTaskResult(
+	result: Record<string, unknown>,
+	options: BashResultRenderOptions,
+	rawTheme: BashRenderTheme,
+	context?: ToolRenderContextLike,
+): Text {
+	const theme = safeBashResultTheme(rawTheme);
+	const stateCarrier = context?.state as Record<string, unknown> | undefined;
+	const cachedComponent = stateCarrier?.[BASH_RESULT_STATE_KEY] as Text | undefined;
+	const rawOutput = extractTextOutput(result);
+
+	if (isToolError(result, context)) {
+		const lines = prepareOutputLines(rawOutput, options.expanded);
+		let text = theme.fg("error", "↳ failed to start background task");
+		if (lines.length > 0) {
+			text += `\n${lines.map((l) => theme.fg("error", sanitizeAnsiForThemedOutput(l))).join("\n")}`;
+		}
+		const rendered = reuseTextComponent(text, cachedComponent);
+		if (stateCarrier) stateCarrier[BASH_RESULT_STATE_KEY] = rendered;
+		return rendered;
+	}
+
+	const details = result.details as Record<string, unknown> | undefined;
+	const taskId =
+		typeof details?.id === "string"
+			? details.id
+			: (rawOutput.match(/task id:\s*(task-\d+)/i)?.[1] || "task");
+	const taskName = typeof details?.name === "string" ? details.name : undefined;
+	const logPath =
+		typeof details?.logPath === "string"
+			? details.logPath
+			: (rawOutput.match(/Output:\s*(\S+)/i)?.[1] || "");
+
+	const header = `${theme.fg("toolTitle", theme.bold("⏾ Background task started"))} ${theme.fg("muted", "·")} ${theme.fg("accent", taskId)}${taskName ? ` ${theme.fg("muted", `(${taskName})`)}` : ""}`;
+	const logLine = logPath
+		? `\n${theme.fg("muted", "↳ Log: ")}${theme.fg("toolOutput", sanitizeAnsiForThemedOutput(logPath))}`
+		: "";
+	const hintLine = `\n${theme.fg("muted", "↳ Do not poll. You will be notified when it finishes.")}`;
+
+	const rendered = reuseTextComponent(`${header}${logLine}${hintLine}`, cachedComponent);
+	if (stateCarrier) stateCarrier[BASH_RESULT_STATE_KEY] = rendered;
+	return rendered;
+}
+
+export function renderManageBackgroundTaskResult(
+	result: Record<string, unknown>,
+	options: BashResultRenderOptions,
+	rawTheme: BashRenderTheme,
+	context?: ToolRenderContextLike,
+): Text {
+	const theme = safeBashResultTheme(rawTheme);
+	const stateCarrier = context?.state as Record<string, unknown> | undefined;
+	const cachedComponent = stateCarrier?.[BASH_RESULT_STATE_KEY] as Text | undefined;
+	const rawOutput = extractTextOutput(result);
+
+	if (isToolError(result, context)) {
+		const lines = prepareOutputLines(rawOutput, options.expanded);
+		let text = theme.fg("error", "↳ error");
+		if (lines.length > 0) {
+			text += `: ${lines.map((l) => theme.fg("error", sanitizeAnsiForThemedOutput(l))).join("\n")}`;
+		}
+		const rendered = reuseTextComponent(text, cachedComponent);
+		if (stateCarrier) stateCarrier[BASH_RESULT_STATE_KEY] = rendered;
+		return rendered;
+	}
+
+	const args = context?.args as Record<string, unknown> | undefined;
+	const action = (
+		typeof args?.action === "string"
+			? args.action
+			: typeof args?.taskAction === "string"
+				? args.taskAction
+				: ""
+	).trim();
+
+	const lines = prepareOutputLines(rawOutput, options.expanded);
+	let renderedText: string;
+
+	if (action === "kill" || action === "adopt") {
+		renderedText = `${theme.fg("accent", "✓")} ${lines.map((l) => theme.fg("toolOutput", sanitizeAnsiForThemedOutput(l))).join("\n")}`;
+	} else if (action === "list") {
+		if (rawOutput.includes("No background tasks")) {
+			renderedText = theme.fg("muted", "↳ No background tasks.");
+		} else {
+			renderedText = lines.map((l) => theme.fg("toolOutput", sanitizeAnsiForThemedOutput(l))).join("\n");
+		}
+	} else if (action === "input") {
+		renderedText = theme.fg("toolOutput", `↳ ${rawOutput.trim() || "Input sent."}`);
+	} else {
+		// status, logs, or default preview
+		if (lines.length === 0) {
+			renderedText = theme.fg("muted", "↳ (no output)");
+		} else {
+			const maxLines = options.expanded ? lines.length : DEFAULT_PREVIEW_LINES;
+			renderedText = buildPreviewText(lines, maxLines, theme, options.expanded);
+		}
+	}
+
+	const rendered = reuseTextComponent(renderedText, cachedComponent);
+	if (stateCarrier) stateCarrier[BASH_RESULT_STATE_KEY] = rendered;
+	return rendered;
+}

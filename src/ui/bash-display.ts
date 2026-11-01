@@ -34,6 +34,25 @@ export interface BashCallArgs {
 	timeout?: number;
 }
 
+export interface BackgroundTaskCallArgs {
+	command?: string;
+	taskName?: string;
+	timeout?: number;
+	cwd?: string;
+	intent?: string;
+	tool?: string;
+	commandPrefix?: string;
+	description?: string;
+}
+
+export interface ManageBackgroundTaskCallArgs {
+	action?: string;
+	taskAction?: string;
+	taskId?: string;
+	input?: string;
+	lines?: number;
+}
+
 export interface BashCallRenderOptions {
 	intentMode?: "off" | "render" | "render-and-instruct";
 	showCommand?: boolean;
@@ -368,14 +387,10 @@ export function buildBashCallText(
 	return `${spinnerPrefix}${head}${shellSuffix}${timeoutSuffix}${backgroundSuffix}${elapsedSuffix}${tail}${cwdLine}`;
 }
 
-export function renderBashCall(
-	args: BashCallArgs,
-	theme: BashCallRenderTheme,
+function renderWithSpinner(
 	context: BashCallRenderContextLike,
-	options?: BashCallRenderOptions,
+	renderText: (spinnerFrame?: string, elapsedMs?: number) => string,
 ): Text {
-	const displayDirs = [context.cwd, cleanOptionalText(args.cwd)];
-	const displayCommand = stripDisplayCd(typeof args.command === "string" ? args.command : "", displayDirs);
 	const text = context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
 	const carrier = toStateCarrier(context.state);
 	const toolCallId = getToolCallId(context);
@@ -384,7 +399,7 @@ export function renderBashCall(
 
 	if (!shouldSpin) {
 		stopSpinner(toolCallId, spinnerState);
-		text.setText(buildBashCallText(args, theme, options, context.expanded === true, undefined, undefined, displayCommand));
+		text.setText(renderText(undefined, undefined));
 		return text;
 	}
 
@@ -394,14 +409,9 @@ export function renderBashCall(
 			const timer = setInterval(() => {
 				spinnerState.frameIndex = (spinnerState.frameIndex + 1) % BASH_SPINNER_FRAMES.length;
 				text.setText(
-					buildBashCallText(
-						args,
-						theme,
-						options,
-						context.expanded === true,
+					renderText(
 						BASH_SPINNER_FRAMES[spinnerState.frameIndex],
 						Date.now() - (spinnerState.startedAt ?? Date.now()),
-						displayCommand,
 					),
 				);
 				context.invalidate?.();
@@ -415,6 +425,111 @@ export function renderBashCall(
 	const elapsedMs = spinnerState?.startedAt !== undefined
 		? Date.now() - spinnerState.startedAt
 		: undefined;
-	text.setText(buildBashCallText(args, theme, options, context.expanded === true, spinnerFrame, elapsedMs, displayCommand));
+	text.setText(renderText(spinnerFrame, elapsedMs));
 	return text;
+}
+
+export function renderBashCall(
+	args: BashCallArgs,
+	theme: BashCallRenderTheme,
+	context: BashCallRenderContextLike,
+	options?: BashCallRenderOptions,
+): Text {
+	const displayDirs = [context.cwd, cleanOptionalText(args.cwd)];
+	const displayCommand = stripDisplayCd(typeof args.command === "string" ? args.command : "", displayDirs);
+	return renderWithSpinner(context, (spinnerFrame, elapsedMs) =>
+		buildBashCallText(args, theme, options, context.expanded === true, spinnerFrame, elapsedMs, displayCommand),
+	);
+}
+
+export function buildBackgroundTaskCallText(
+	args: BackgroundTaskCallArgs,
+	rawTheme: BashCallRenderTheme,
+	options?: BashCallRenderOptions,
+	expanded?: boolean,
+	spinnerFrame?: string,
+	elapsedMs?: number,
+	displayCommand?: string,
+): string {
+	const theme = safeBashCallTheme(rawTheme);
+	const command = displayCommand ?? (typeof args.command === "string" ? args.command : "");
+	const commandDisplay = truncateCommand(command.trim() || "...", options?.maxCommandChars ?? 0);
+	const taskNameDisplay = cleanOptionalText(args.taskName);
+	const spinnerPrefix = spinnerFrame ? `${theme.fg("warning", `${spinnerFrame} `)}` : "";
+	const elapsedSuffix =
+		spinnerFrame && elapsedMs !== undefined
+			? theme.fg("muted", ` · ${formatElapsed(elapsedMs)}`)
+			: "";
+	const timeoutSuffix = args.timeout ? theme.fg("muted", ` (timeout ${args.timeout}s)`) : "";
+
+	const badge = `${theme.fg("toolTitle", theme.bold("⏾ background task"))}`;
+	const dot = ` ${theme.fg("muted", "·")} `;
+
+	let header: string;
+	if (taskNameDisplay) {
+		header = `${badge}${dot}${theme.fg("accent", taskNameDisplay)}${dot}${theme.fg("accent", `$ ${commandDisplay}`)}`;
+	} else {
+		header = `${badge}${dot}${theme.fg("accent", `$ ${commandDisplay}`)}`;
+	}
+
+	const cwdDisplay = cleanOptionalText(args.cwd);
+	const cwdLine = expanded && cwdDisplay ? `\n${theme.fg("muted", `cwd: ${cwdDisplay.trim()}`)}` : "";
+	return `${spinnerPrefix}${header}${timeoutSuffix}${elapsedSuffix}${cwdLine}`;
+}
+
+export function renderBackgroundTaskCall(
+	args: BackgroundTaskCallArgs,
+	theme: BashCallRenderTheme,
+	context: BashCallRenderContextLike,
+	options?: BashCallRenderOptions,
+): Text {
+	const displayDirs = [context.cwd, cleanOptionalText(args.cwd)];
+	const displayCommand = stripDisplayCd(typeof args.command === "string" ? args.command : "", displayDirs);
+	return renderWithSpinner(context, (spinnerFrame, elapsedMs) =>
+		buildBackgroundTaskCallText(args, theme, options, context.expanded === true, spinnerFrame, elapsedMs, displayCommand),
+	);
+}
+
+export function buildManageBackgroundTaskCallText(
+	args: ManageBackgroundTaskCallArgs,
+	rawTheme: BashCallRenderTheme,
+	_options?: BashCallRenderOptions,
+	expanded?: boolean,
+	spinnerFrame?: string,
+	elapsedMs?: number,
+): string {
+	const theme = safeBashCallTheme(rawTheme);
+	const action = cleanOptionalText(args.action || args.taskAction) || "list";
+	const taskId = cleanOptionalText(args.taskId);
+	const spinnerPrefix = spinnerFrame ? `${theme.fg("warning", `${spinnerFrame} `)}` : "";
+	const elapsedSuffix =
+		spinnerFrame && elapsedMs !== undefined
+			? theme.fg("muted", ` · ${formatElapsed(elapsedMs)}`)
+			: "";
+	const title = `🔧 ${theme.fg("toolTitle", theme.bold("task manager"))}`;
+	const dot = ` ${theme.fg("muted", "·")} `;
+
+	const detail = taskId ? `${action} ${taskId}` : action;
+	let line = `${spinnerPrefix}${title}${dot}${theme.fg("accent", detail)}${elapsedSuffix}`;
+
+	if (expanded) {
+		if (args.input) {
+			line += `\n${theme.fg("muted", `input: ${truncateCommand(args.input, 40)}`)}`;
+		}
+		if (args.lines) {
+			line += `\n${theme.fg("muted", `lines: ${args.lines}`)}`;
+		}
+	}
+	return line;
+}
+
+export function renderManageBackgroundTaskCall(
+	args: ManageBackgroundTaskCallArgs,
+	theme: BashCallRenderTheme,
+	context: BashCallRenderContextLike,
+	options?: BashCallRenderOptions,
+): Text {
+	return renderWithSpinner(context, (spinnerFrame, elapsedMs) =>
+		buildManageBackgroundTaskCallText(args, theme, options, context.expanded === true, spinnerFrame, elapsedMs),
+	);
 }

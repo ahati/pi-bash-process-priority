@@ -24,8 +24,22 @@ import { truncateToWidth } from "@earendil-works/pi-tui";
 import { Type, type Static, type TObject, type TSchema } from "typebox";
 import { buildNiceCommand } from "./nice.ts";
 import type { BgTask, TaskManagerApi } from "./types.ts";
-import { renderBashCall, type BashCallArgs, type BashCallRenderOptions } from "./ui/bash-display.ts";
-import { renderBashResult, type BashRenderTheme, type BashResultRenderOptions } from "./ui/bash-result.ts";
+import {
+	renderBashCall,
+	renderBackgroundTaskCall,
+	renderManageBackgroundTaskCall,
+	type BashCallArgs,
+	type BackgroundTaskCallArgs,
+	type ManageBackgroundTaskCallArgs,
+	type BashCallRenderOptions,
+} from "./ui/bash-display.ts";
+import {
+	renderBashResult,
+	renderBackgroundTaskResult,
+	renderManageBackgroundTaskResult,
+	type BashRenderTheme,
+	type BashResultRenderOptions,
+} from "./ui/bash-result.ts";
 
 /**
  * Foreground spawn argv (PRD-001/PRD-004): absolute `nice` binary when probed
@@ -100,12 +114,14 @@ export function getSharedOperations(): BashOperations | undefined {
 	return sharedOperations;
 }
 
-export type TaskAction = "list" | "status" | "kill" | "input" | "adopt";
+export type TaskAction = "list" | "status" | "logs" | "kill" | "input" | "adopt";
 
 export interface TaskActionParams {
-	taskAction: TaskAction;
+	taskAction?: TaskAction;
+	action?: TaskAction;
 	taskId?: string;
 	input?: string;
+	lines?: number;
 }
 
 export interface TaskActionResult {
@@ -133,7 +149,10 @@ export async function runTaskAction(
 	registry: TaskManagerApi,
 	params: TaskActionParams,
 ): Promise<TaskActionResult> {
-	const { taskAction } = params;
+	const taskAction = params.action ?? params.taskAction;
+	if (!taskAction) {
+		return { text: "Missing required parameter: action (list, status, logs, kill, input, adopt).", isError: true };
+	}
 
 	if (taskAction === "list") {
 		const tasks = registry.list();
@@ -157,8 +176,17 @@ export async function runTaskAction(
 	const task = registry.get(target);
 	if (!task) return { text: `Unknown task: ${target}.`, isError: true };
 
-	if (taskAction === "status") {
-		const log = await registry.logs(task.id);
+	if (taskAction === "status" || taskAction === "logs") {
+		let log = await registry.logs(task.id);
+		if (params.lines && params.lines > 0) {
+			const split = log.split("\n");
+			if (split.length > params.lines) {
+				log = split.slice(-params.lines).join("\n");
+			}
+		}
+		if (taskAction === "logs") {
+			return { text: log || "(no log output yet)", details: task };
+		}
 		return { text: `${taskLine(task)}\n\n${log}`, details: task };
 	}
 	if (taskAction === "kill") {
@@ -264,6 +292,80 @@ export function normalizeBashArgs(raw: unknown): NormalizedBashArgs {
 
 	if (typeof args.taskAction === "string" && TASK_ACTIONS.has(args.taskAction)) {
 		out.taskAction = args.taskAction as NormalizedBashArgs["taskAction"];
+	}
+
+	return out;
+}
+
+export interface NormalizedBackgroundTaskArgs {
+	command?: string;
+	taskName?: string;
+	timeout?: number;
+	cwd?: string;
+	intent?: string;
+	tool?: string;
+}
+
+export function normalizeBackgroundTaskArgs(raw: unknown): NormalizedBackgroundTaskArgs {
+	const args = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
+	const out: NormalizedBackgroundTaskArgs = {};
+
+	for (const key of ["command", "taskName", "cwd", "intent", "tool"] as const) {
+		const val = args[key];
+		if (typeof val === "string") {
+			const trimmed = val.trim();
+			if (trimmed !== "" && trimmed !== "null" && trimmed !== "undefined") {
+				out[key] = val;
+			}
+		}
+	}
+
+	if (typeof args.timeout === "number" && Number.isFinite(args.timeout)) {
+		out.timeout = args.timeout;
+	} else if (typeof args.timeout === "string" && args.timeout.trim() !== "" && !Number.isNaN(Number(args.timeout))) {
+		out.timeout = Number(args.timeout);
+	}
+
+	return out;
+}
+
+export interface NormalizedManageBackgroundTaskArgs {
+	action?: TaskAction;
+	taskId?: string;
+	input?: string;
+	lines?: number;
+}
+
+const VALID_ACTIONS = new Set<TaskAction>(["list", "status", "logs", "kill", "input", "adopt"]);
+
+export function normalizeManageBackgroundTaskArgs(raw: unknown): NormalizedManageBackgroundTaskArgs {
+	const args = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
+	const out: NormalizedManageBackgroundTaskArgs = {};
+
+	const actionRaw =
+		typeof args.action === "string"
+			? args.action.trim()
+			: typeof args.taskAction === "string"
+				? args.taskAction.trim()
+				: undefined;
+	if (actionRaw && VALID_ACTIONS.has(actionRaw as TaskAction)) {
+		out.action = actionRaw as TaskAction;
+	}
+
+	for (const key of ["taskId", "input"] as const) {
+		const val = args[key];
+		if (typeof val === "string") {
+			const trimmed = val.trim();
+			if (trimmed !== "" && trimmed !== "null" && trimmed !== "undefined") {
+				out[key] = val;
+			}
+		}
+	}
+
+	if (typeof args.lines === "number" && Number.isFinite(args.lines)) {
+		out.lines = args.lines;
+	} else if (typeof args.lines === "string" && args.lines.trim() !== "" && !Number.isNaN(Number(args.lines))) {
+		out.lines = Number(args.lines);
 	}
 
 	return out;
@@ -600,41 +702,14 @@ export function createBackgroundAwareBashTool(cwd: string, deps: BashOverrideDep
 	const fgCap = Math.max(1, deps.fgTimeoutMax ?? 60);
 	const bgCap = Math.max(1, deps.bgTimeoutMax ?? 300);
 
-	// PRD-004 §4.1 — one `bash` tool, one entry point per call.
-	//
-	// Declared as mutually exclusive variants, each stating exactly what it
-	// requires. Nothing that a variant needs is wrapped in Type.Optional:
-	//
-	//   execute            → command                       (required)
-	//   taskAction: list   → taskAction                    (required)
-	//   taskAction: status → taskAction + taskId            (both required)
-	//   taskAction: kill   → taskAction + taskId            (both required)
-	//   taskAction: input  → taskAction + taskId + input    (all required)
-	//   taskAction: adopt  → taskAction                    (required)
-	// PRD-004 §4.1 — one `bash` tool, two mutually exclusive functional groups:
-	// 1. Command Execution: `command` is required; execution options (timeout,
-	//    background, taskName, cwd, intent, tool) are optional.
-	// 2. Task Management: `taskAction` is required; `taskId` and `input` are
-	//    required only on the actions that need them.
-	const executeVariant = Type.Object({
+	const bashParams = Type.Object({
 		command: Type.String({
 			description:
 				"The exact command line to execute. A leading `cd <current-directory> &&` for the current directory is dropped automatically.",
 		}),
 		timeout: Type.Optional(
 			Type.Number({
-				description: `Optional. Max seconds to run. Foreground commands may run at most ${fgCap}s and background tasks at most ${bgCap}s — larger values are rejected.`,
-			}),
-		),
-		background: Type.Optional(
-			Type.Boolean({
-				description:
-					"Run as a background task (task-N) at low priority: returns immediately, notifies on completion. Use for dev servers, watchers, long test suites. Never poll — you will be notified when it finishes.",
-			}),
-		),
-		taskName: Type.Optional(
-			Type.String({
-				description: "Optional short name for the background task (shown in the task list and notifications). Only valid with background=true.",
+				description: `Optional. Max seconds to run (cap: ${fgCap}s). Large values are rejected. For long-running commands, use background_task.`,
 			}),
 		),
 		cwd: Type.Optional(
@@ -652,120 +727,48 @@ export function createBackgroundAwareBashTool(cwd: string, deps: BashOverrideDep
 					"Optional header label shown by compatible renderers (e.g. pi-ui-enhancement), e.g. 'git status'.",
 			}),
 		),
-	});
-
-	const taskIdField = Type.String({ description: 'Task id such as "task-7" (required for status/kill/input).' });
-	const inputField = Type.String({ description: "Text to write to the task stdin (required with taskAction 'input', newline appended)." });
-
-	const manageVariants = [
-		Type.Object({
-			taskAction: Type.Literal("list", { description: "Report all background tasks, running first." }),
-		}),
-		Type.Object({
-			taskAction: Type.Literal("status", { description: "Show one task's state plus the tail of its output." }),
-			taskId: taskIdField,
-		}),
-		Type.Object({
-			taskAction: Type.Literal("kill", { description: "Terminate one background task." }),
-			taskId: taskIdField,
-		}),
-		Type.Object({
-			taskAction: Type.Literal("input", { description: "Write text to one background task's stdin." }),
-			taskId: taskIdField,
-			input: inputField,
-		}),
-		Type.Object({
-			taskAction: Type.Literal("adopt", {
-				description: "Move the currently running foreground command into a background task.",
-			}),
-		}),
-	];
-
-	const bashParams = flattenVariants(executeVariant, manageVariants, {
+	}, {
 		description:
-			"Exactly one entry point per call: `command` (with optional execution parameters: timeout, background, taskName, cwd, intent, tool) " +
-			"to execute a command, or `taskAction` (with action parameters: taskId, input) to manage background tasks. " +
-			"taskId is required for status/kill/input; input text is required for taskAction 'input'.",
+			`Execute a shell command in the foreground. Output streams back while the command runs; the result contains stdout+stderr and exit code. ` +
+			`Foreground commands may run at most ${fgCap}s. For long-running commands, use background_task. To manage tasks, use manage_background_task.`,
 	});
 
-	// The compile-time mirror of the schema above: exactly one entry point, and
-	// the parameters each action requires are non-optional in its variant.
-	// `execute` only ever sees arguments that already passed validation.
-	type TaskActionName = NonNullable<NormalizedBashArgs["taskAction"]>;
 	type BashParams = {
+		command?: string;
 		timeout?: number;
 		background?: boolean;
 		taskName?: string;
 		cwd?: string;
 		intent?: string;
 		tool?: string;
+		taskAction?: TaskAction;
+		action?: TaskAction;
 		taskId?: string;
 		input?: string;
-	} & ({ command: string; taskAction?: undefined } | { command?: undefined; taskAction: TaskActionName });
+		lines?: number;
+	};
 
-	// Fully overridden description (PRD-004 §4.1): documents every parameter,
-	// both execution modes, the timeout caps and rejection semantics, priority,
-	// and management verbs. The model should never have to guess a limit.
-	const amendedDescription = `Execute a shell command in the session's workspace.
+	const amendedDescription = `Execute a shell command in the session's workspace in the foreground.
 
-## Execution modes
+## Execution
 
-**Foreground (default).** Output streams back while the command runs; the
-result contains stdout+stderr (truncated when large) and the exit code.
-Foreground commands may run at most ${fgCap}s (PI_BASH_FG_TIMEOUT_MAX); a
-timeout above that cap is rejected immediately.
+Output streams back while the command runs; the result contains stdout+stderr (truncated when large) and the exit code.
+Foreground commands may run at most ${fgCap}s (PI_BASH_FG_TIMEOUT_MAX); a timeout above that cap is rejected immediately.
 
-**Background (background=true).** The command starts immediately as a
-background task at low CPU/IO priority and the call returns at once with a
-task id (task-N) and a log path. Background tasks may run at most
-${bgCap}s (PI_BASH_TIMEOUT_BG_MAX); a timeout above that cap is rejected.
-Label the task with taskName.
+## Dedicated Tools
+
+- For long-running commands, dev servers, watchers, or builds, use \`background_task\` instead.
+- To view, inspect, or manage background tasks, use \`manage_background_task\`.
 
 ## Parameters
 
-Every call must supply **exactly one** of \`command\` (execute something) or
-\`taskAction\` (manage background tasks) — the schema rejects a call with
-neither, and a call with both.
-
-- command: the exact command line. A leading \`cd <current-directory> &&\`
-  (or \`cd .\` / \`cd $PWD\`) is redundant — the tool already runs in the
-  current directory — and is dropped automatically. A \`cd\` to a DIFFERENT
-  directory is meaningful and is preserved.
-- cwd: optional working directory for this command; defaults to the current
-  execution directory.
-- timeout: optional, in seconds. Foreground cap ${fgCap}s, background cap
-  ${bgCap}s; supplying more is rejected immediately with the cap named.
-- background: set true for dev servers, watchers, long test suites, or any
-  command that outlives a single turn.
-- taskName: short human-readable label for a background task (shown in the
-  task list and notifications).
-
-## Background tasks — rules
-
-1. After starting a background task, either continue other work or end your
-   turn. The system notifies you when the task finishes — NEVER poll, and
-   never use sleep to wait for a task.
-2. Manage tasks with taskAction — the schema enforces each action's own
-   parameters, so a call that omits them is rejected before it runs:
-
-   | taskAction | required parameters            | what it does                        |
-   | ---------- | ------------------------------ | ----------------------------------- |
-   | list       | —                              | all tasks, running first            |
-   | status     | taskId                         | state + recent output               |
-   | kill       | taskId                         | terminate the task                  |
-   | input      | taskId + input                 | write text to the task's stdin      |
-   | adopt      | —                              | move the running foreground command |
-
-   When taskAction is set, all execution parameters are ignored.
-3. If the user asks to move a running foreground command to the background,
-   use taskAction "adopt".
+- command: the exact command line to run. A leading \`cd <current-directory> &&\` (or \`cd .\` / \`cd $PWD\`) is redundant and dropped automatically.
+- cwd: optional working directory for this command; defaults to the current execution directory.
+- timeout: optional, in seconds (cap: ${fgCap}s).
 
 ## Priority
 
-Foreground commands run at reduced CPU priority (nice, configurable) so the
-user's machine stays responsive; background tasks run at an even lower
-priority and idle IO class. An optional \`intent\` and \`tool\` label describe
-the call for compatible UI renderers.`;
+Foreground commands run at reduced CPU priority (nice, configurable) so the user's machine stays responsive.`;
 
 	const ourExecute = async (
 		toolCallId: string,
@@ -787,12 +790,13 @@ the call for compatible UI renderers.`;
 			};
 		}
 
-		// ---- management branch (PRD-004 §4.1 taskAction) ----------------
-		if (params.taskAction) {
+		// ---- fail-open management branch if model called bash with taskAction ----
+		if (params.taskAction || params.action) {
 			const outcome = await runTaskAction(deps.registry, {
-				taskAction: params.taskAction,
+				taskAction: params.action ?? params.taskAction,
 				taskId: params.taskId,
 				input: params.input,
+				lines: params.lines,
 			});
 			return {
 				content: [{ type: "text", text: outcome.text }],
@@ -802,14 +806,7 @@ the call for compatible UI renderers.`;
 		}
 		if (params.command === undefined || params.command.trim() === "") {
 			return {
-				content: [
-					{
-						type: "text",
-						text:
-							"Provide exactly one of `command` (to execute a shell command) or `taskAction` " +
-							"(list/status/kill/input/adopt to manage background tasks).",
-					},
-				],
+				content: [{ type: "text", text: "Missing required parameter: command." }],
 				isError: true,
 			};
 		}
@@ -818,7 +815,7 @@ the call for compatible UI renderers.`;
 		const effectiveCwd = params.cwd?.trim() ? params.cwd : cwd;
 		const command = stripCdPrefix(params.command, effectiveCwd);
 
-		// ---- background branch (PRD-004 §4.1) ---------------------------
+		// ---- fail-open background branch if model called bash with background: true ----
 		if (params.background) {
 			const timeoutSeconds = params.timeout;
 			const isSubagent = deps.callerType === "subagent" || (ctx ? !ctx.hasUI : false);
@@ -906,11 +903,267 @@ the call for compatible UI renderers.`;
 
 	return {
 		...builtin,
+		name: "bash",
+		label: "bash",
+		promptSnippet: "Execute foreground shell commands synchronously",
 		parameters: bashParams,
 		description: amendedDescription,
 		prepareArguments: (args: unknown) => normalizeBashArgs(args) as unknown,
 		renderCall,
 		renderResult,
 		execute: ourExecute,
+	} as unknown as ToolDefinition;
+}
+
+export const createForegroundBashTool = createBackgroundAwareBashTool;
+
+export function createBackgroundTaskTool(
+	cwd: string,
+	deps: BashOverrideDeps,
+	toolName = "background_task",
+): ToolDefinition {
+	depsRegistry = deps.registry;
+	lastDeps = deps;
+	const bgCap = Math.max(1, deps.bgTimeoutMax ?? 300);
+	const fgCap = Math.max(1, deps.fgTimeoutMax ?? 60);
+
+	const backgroundTaskParams = Type.Object(
+		{
+			command: Type.String({
+				description:
+					"The exact command line to run in the background. A leading `cd <current-directory> &&` for the current directory is dropped automatically.",
+			}),
+			taskName: Type.Optional(
+				Type.String({
+					description:
+						"Optional short human-readable label for the background task (shown in the task list and notifications).",
+				}),
+			),
+			timeout: Type.Optional(
+				Type.Number({
+					description: `Optional timeout in seconds (cap: ${bgCap}s). A timeout above this cap is rejected.`,
+				}),
+			),
+			cwd: Type.Optional(
+				Type.String({
+					description: "Optional working directory. Defaults to the current execution directory.",
+				}),
+			),
+			intent: Type.Optional(
+				Type.String({
+					description: "Optional short intent description.",
+				}),
+			),
+			tool: Type.Optional(
+				Type.String({
+					description: "Optional header label.",
+				}),
+			),
+		},
+		{
+			description:
+				"Run a shell command as a background task at low CPU/IO priority. Returns immediately with a task ID (e.g. task-1) and log path. Do not poll.",
+		},
+	);
+
+	const execute = async (
+		_toolCallId: string,
+		params: NormalizedBackgroundTaskArgs,
+		_signal: AbortSignal | undefined,
+		_onUpdate: unknown,
+		ctx: unknown,
+	) => {
+		const timeoutProblem = validateTimeout(params.timeout, true, { fg: fgCap, bg: bgCap });
+		if (timeoutProblem) {
+			return {
+				content: [{ type: "text", text: timeoutProblem }],
+				isError: true,
+			};
+		}
+		if (!params.command || params.command.trim() === "") {
+			return {
+				content: [{ type: "text", text: "Missing required parameter: command." }],
+				isError: true,
+			};
+		}
+
+		const effectiveCwd = params.cwd?.trim() ? params.cwd : cwd;
+		const command = stripCdPrefix(params.command, effectiveCwd);
+
+		const isSubagent = deps.callerType === "subagent" || (ctx ? !(ctx as any).hasUI : false);
+		const callerType = isSubagent ? "subagent" : (deps.callerType ?? "agent");
+		const subagentName =
+			deps.subagentName ?? (isSubagent && ctx ? (ctx as any).sessionManager?.getSessionName?.() : undefined);
+
+		const task = await deps.registry.run(command, effectiveCwd, {
+			name: params.taskName,
+			callerType,
+			subagentName,
+			timeoutSeconds: params.timeout,
+		});
+
+		return {
+			content: [{ type: "text", text: formatBackgroundToolResult(task) }],
+			details: task,
+			isError: false,
+		};
+	};
+
+	const renderCall = (
+		args: NormalizedBackgroundTaskArgs,
+		theme: Parameters<typeof renderBackgroundTaskCall>[1],
+		context: Parameters<typeof renderBackgroundTaskCall>[2],
+	) => {
+		return renderBackgroundTaskCall(
+			args as BackgroundTaskCallArgs,
+			theme,
+			context,
+			deps.renderOptions,
+		);
+	};
+
+	const renderResult = (
+		result: Record<string, unknown>,
+		options: BashResultRenderOptions,
+		theme: BashRenderTheme,
+		context?: unknown,
+	) => {
+		return renderBackgroundTaskResult(
+			result,
+			options,
+			theme,
+			context as Parameters<typeof renderBackgroundTaskResult>[3],
+		);
+	};
+
+	return {
+		name: toolName,
+		label: toolName,
+		promptSnippet: "Run long-running background tasks (dev servers, watchers, builds)",
+		description: `Run a shell command as a background task at low CPU/IO priority.
+
+Use this for long-running processes: dev servers, file watchers, test runners, builds, persistent services, or any command that should run asynchronously.
+
+Returns immediately with a task ID (e.g. task-1) and a log file path.
+DO NOT poll for completion or use sleep to wait; the system automatically notifies you when the task finishes.
+To check status, view logs, or terminate a task, use \`manage_background_task\`.`,
+		parameters: backgroundTaskParams,
+		prepareArguments: (args: unknown) => normalizeBackgroundTaskArgs(args) as unknown,
+		renderCall,
+		renderResult,
+		execute: execute as any,
+	} as unknown as ToolDefinition;
+}
+
+export function createManageBackgroundTaskTool(
+	deps: BashOverrideDeps,
+	toolName = "manage_background_task",
+): ToolDefinition {
+	depsRegistry = deps.registry;
+	lastDeps = deps;
+
+	const manageBackgroundTaskParams = Type.Object(
+		{
+			action: Type.Union(
+				[
+					Type.Literal("list", { description: "Report all background tasks, running first." }),
+					Type.Literal("status", { description: "Show one task's state plus the tail of its output (requires taskId)." }),
+					Type.Literal("logs", { description: "Show recent log output for a task (requires taskId, optional lines)." }),
+					Type.Literal("kill", { description: "Terminate one background task (requires taskId)." }),
+					Type.Literal("input", { description: "Write text to one background task's stdin (requires taskId and input)." }),
+					Type.Literal("adopt", { description: "Move the currently running foreground command into a background task." }),
+				],
+				{ description: "Management action to perform: list, status, logs, kill, input, adopt." },
+			),
+			taskId: Type.Optional(
+				Type.String({ description: 'Task id such as "task-1" (required for status, logs, kill, input).' }),
+			),
+			input: Type.Optional(
+				Type.String({ description: "Text to write to the task stdin (required for action 'input', newline appended)." }),
+			),
+			lines: Type.Optional(
+				Type.Number({ description: "Optional maximum number of lines to return for status or logs." }),
+			),
+		},
+		{
+			description:
+				"Manage background tasks: list running tasks, check status/logs, stop tasks, send stdin input, or adopt foreground command.",
+		},
+	);
+
+	const execute = async (
+		_toolCallId: string,
+		params: NormalizedManageBackgroundTaskArgs,
+		_signal: AbortSignal | undefined,
+		_onUpdate: unknown,
+		_ctx: unknown,
+	) => {
+		const action = params.action;
+		if (!action) {
+			return {
+				content: [{ type: "text", text: "Missing required parameter: action (list, status, logs, kill, input, adopt)." }],
+				isError: true,
+			};
+		}
+
+		const outcome = await runTaskAction(deps.registry, {
+			action,
+			taskId: params.taskId,
+			input: params.input,
+			lines: params.lines,
+		});
+
+		return {
+			content: [{ type: "text", text: outcome.text }],
+			details: outcome.details,
+			isError: outcome.isError === true,
+		};
+	};
+
+	const renderCall = (
+		args: NormalizedManageBackgroundTaskArgs,
+		theme: Parameters<typeof renderManageBackgroundTaskCall>[1],
+		context: Parameters<typeof renderManageBackgroundTaskCall>[2],
+	) => {
+		return renderManageBackgroundTaskCall(
+			args as ManageBackgroundTaskCallArgs,
+			theme,
+			context,
+			deps.renderOptions,
+		);
+	};
+
+	const renderResult = (
+		result: Record<string, unknown>,
+		options: BashResultRenderOptions,
+		theme: BashRenderTheme,
+		context?: unknown,
+	) => {
+		return renderManageBackgroundTaskResult(
+			result,
+			options,
+			theme,
+			context as Parameters<typeof renderManageBackgroundTaskResult>[3],
+		);
+	};
+
+	return {
+		name: toolName,
+		label: toolName,
+		promptSnippet: "Manage background tasks (list, status, logs, kill, input, adopt)",
+		description: `Manage background tasks: list running tasks, inspect status/logs, stop tasks, send input to stdin, or adopt a running foreground command.
+
+Actions:
+- list: List all background tasks (running and finished).
+- status: View task status and recent log output (requires taskId).
+- logs: View recent log output of a task (requires taskId; optional lines).
+- kill: Terminate a background task (requires taskId).
+- input: Send text to the task's stdin (requires taskId and input).
+- adopt: Move the currently running foreground bash command into a background task.`,
+		parameters: manageBackgroundTaskParams,
+		prepareArguments: (args: unknown) => normalizeManageBackgroundTaskArgs(args) as unknown,
+		renderCall,
+		renderResult,
+		execute: execute as any,
 	} as unknown as ToolDefinition;
 }
