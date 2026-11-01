@@ -120,11 +120,11 @@ test("stripCdPrefix generalization: '.' and $PWD targets count as the cwd", asyn
 	assert.equal(stripCdPrefix("cd /tmp && ls", cwd), "cd /tmp && ls"); // different dir kept
 });
 
-test("renderCall: does not mutate lines across multiple render passes", async () => {
-	const { createBackgroundAwareBashTool } = await import("../src/bash-override.ts");
+test("createManageBackgroundTaskTool renderCall: does not mutate lines across multiple render passes", async () => {
+	const { createManageBackgroundTaskTool } = await import("../src/bash-override.ts");
 	const reg = createTaskManager({ logDir: "/tmp/bg-tests-render", killGraceMs: 100, logBytes: 4096, maxFinished: 5 });
 	try {
-		const tool = createBackgroundAwareBashTool("/workspace", {
+		const tool = createManageBackgroundTaskTool({
 			registry: reg,
 			fgNice: 10,
 		}) as unknown as {
@@ -135,12 +135,12 @@ test("renderCall: does not mutate lines across multiple render passes", async ()
 			) => { render: (w: number) => string[] };
 		};
 		const theme = { fg: (_c: string, t: string) => t };
-		const component = tool.renderCall({ taskAction: "list" }, theme, { expanded: true, cwd: "/workspace" });
+		const component = tool.renderCall({ action: "list" }, theme, { expanded: true, cwd: "/workspace" });
 		const pass1 = component.render(80);
 		const pass2 = component.render(80);
 		assert.deepEqual(pass1, pass2);
 		assert.equal(pass1.length, 1);
-		assert.match(pass1[0], /bash tasks.*list/);
+		assert.match(pass1[0], /task manager.*list/);
 	} finally {
 		await reg.disposeAll();
 	}

@@ -49,55 +49,6 @@ const DEFAULT_COLLAPSED_LINES = 5;
 const DEFAULT_PREVIEW_LINES = 8;
 const DEFAULT_EXPANDED_MAX_LINES = 500;
 
-const QUIET_COMMAND_PREFIXES = [
-	"cd",
-	"mkdir",
-	"rmdir",
-	"rm",
-	"mv",
-	"cp",
-	"touch",
-	"chmod",
-	"chown",
-	"git add",
-	"git checkout",
-	"git switch",
-	"git restore",
-	"git reset",
-	"git clean",
-	"npm install",
-	"pnpm install",
-	"yarn install",
-	"bun install",
-	"pip install",
-	"poetry install",
-	"cargo fetch",
-	"go mod tidy",
-	"Set-Location",
-	"New-Item",
-];
-
-function isLikelyQuietCommand(command: string | undefined): boolean {
-	if (!command) return false;
-	const normalized = command.trim().toLowerCase();
-	if (!normalized) return false;
-
-	const primarySegment = normalized
-		.split(/&&|\|\||;/)
-		.map((s) => s.trim())
-		.find((s) => s.length > 0);
-
-	if (!primarySegment) return false;
-
-	for (const prefix of QUIET_COMMAND_PREFIXES) {
-		const normPrefix = prefix.toLowerCase();
-		if (primarySegment === normPrefix || primarySegment.startsWith(`${normPrefix} `)) {
-			return true;
-		}
-	}
-	return false;
-}
-
 export function extractTextOutput(result: Record<string, unknown>): string {
 	const content = result.content;
 	if (typeof content === "string") return content;
@@ -184,51 +135,12 @@ function buildPreviewText(
 	return text;
 }
 
-function formatBashTruncationHints(details: BashToolDetails | undefined, theme: BashRenderTheme): string {
-	if (!details) return "";
-	const hints: string[] = [];
-	if (details.truncation?.truncated) {
-		hints.push("output truncated");
-	}
-	if (details.fullOutputPath) {
-		hints.push(`full output: ${details.fullOutputPath}`);
-	}
-	if (hints.length === 0) return "";
-	return `\n${theme.fg("warning", `(${hints.join(" • ")})`)}`;
-}
-
 function reuseTextComponent(text: string, cached?: Text): Text {
 	if (cached) {
 		cached.setText(text);
 		return cached;
 	}
 	return new Text(text, 0, 0);
-}
-
-export function isBackgroundTaskResult(
-	result: Record<string, unknown>,
-	context?: ToolRenderContextLike,
-): boolean {
-	const args = context?.args;
-	if (args?.background === true) return true;
-	if (
-		typeof args?.taskAction === "string" &&
-		args.taskAction.trim() !== "" &&
-		args.taskAction !== "null" &&
-		args.taskAction !== "undefined"
-	) {
-		return true;
-	}
-	const details = result.details as Record<string, unknown> | undefined;
-	if (
-		details &&
-		typeof details.id === "string" &&
-		details.id.startsWith("task-") &&
-		typeof details.status === "string"
-	) {
-		return true;
-	}
-	return false;
 }
 
 export function isToolError(result: Record<string, unknown>, context?: ToolRenderContextLike): boolean {
@@ -238,70 +150,6 @@ export function isToolError(result: Record<string, unknown>, context?: ToolRende
 		return true;
 	}
 	return false;
-}
-
-export function renderBashResult(
-	result: Record<string, unknown>,
-	options: BashResultRenderOptions,
-	rawTheme: BashRenderTheme,
-	context?: ToolRenderContextLike,
-): Text {
-	const theme = safeBashResultTheme(rawTheme);
-	const details = result.details as BashToolDetails | undefined;
-	const rawOutput = extractTextOutput(result);
-
-	const stateCarrier = context?.state as Record<string, unknown> | undefined;
-	const cachedComponent = stateCarrier?.[BASH_RESULT_STATE_KEY] as Text | undefined;
-	let rendered: Text;
-
-	if (options.isPartial) {
-		const lines = prepareOutputLines(rawOutput, options.expanded);
-		if (lines.length === 0) {
-			rendered = reuseTextComponent("", cachedComponent);
-		} else {
-			const maxLines = options.expanded ? DEFAULT_EXPANDED_MAX_LINES : DEFAULT_PREVIEW_LINES;
-			let preview = buildPreviewText(lines, maxLines, theme, options.expanded);
-			preview += formatBashTruncationHints(details, theme);
-			rendered = reuseTextComponent(preview, cachedComponent);
-		}
-	} else if (isToolError(result, context)) {
-		const lines = prepareOutputLines(rawOutput, options.expanded);
-		let text = theme.fg("error", "↳ command failed");
-		if (lines.length > 0) {
-			const maxLines = options.expanded ? lines.length : DEFAULT_PREVIEW_LINES;
-			const { shown, remaining } = previewLines(lines, maxLines);
-			text += `\n${shown.map((l) => theme.fg("error", sanitizeAnsiForThemedOutput(l))).join("\n")}`;
-			text += formatTruncationHint(remaining, options.expanded, theme);
-		}
-		text += formatBashTruncationHints(details, theme);
-		rendered = reuseTextComponent(text, cachedComponent);
-	} else if (isBackgroundTaskResult(result, context)) {
-		const lines = prepareOutputLines(rawOutput, options.expanded);
-		const text = lines.length === 0
-			? theme.fg("muted", "↳ (no output)")
-			: lines.map((l) => theme.fg("toolOutput", sanitizeAnsiForThemedOutput(l))).join("\n");
-		rendered = reuseTextComponent(text, cachedComponent);
-	} else {
-		const lines = prepareOutputLines(rawOutput, options.expanded);
-		if (lines.length === 0) {
-			const command = typeof context?.args?.command === "string" ? context.args.command : undefined;
-			let text = isLikelyQuietCommand(command)
-				? theme.fg("muted", "↳ command completed (no output)")
-				: theme.fg("muted", "↳ (no output)");
-			text += formatBashTruncationHints(details, theme);
-			rendered = reuseTextComponent(text, cachedComponent);
-		} else {
-			const maxLines = options.expanded ? lines.length : DEFAULT_COLLAPSED_LINES;
-			let text = buildPreviewText(lines, maxLines, theme, options.expanded);
-			text += formatBashTruncationHints(details, theme);
-			rendered = reuseTextComponent(text, cachedComponent);
-		}
-	}
-
-	if (stateCarrier) {
-		stateCarrier[BASH_RESULT_STATE_KEY] = rendered;
-	}
-	return rendered;
 }
 
 export function renderBackgroundTaskResult(

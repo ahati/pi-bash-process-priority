@@ -25,16 +25,13 @@ import { Type, type Static, type TObject, type TSchema } from "typebox";
 import { buildNiceCommand } from "./nice.ts";
 import type { BgTask, TaskManagerApi } from "./types.ts";
 import {
-	renderBashCall,
 	renderBackgroundTaskCall,
 	renderManageBackgroundTaskCall,
-	type BashCallArgs,
 	type BackgroundTaskCallArgs,
 	type ManageBackgroundTaskCallArgs,
 	type BashCallRenderOptions,
 } from "./ui/bash-display.ts";
 import {
-	renderBashResult,
 	renderBackgroundTaskResult,
 	renderManageBackgroundTaskResult,
 	type BashRenderTheme,
@@ -922,39 +919,6 @@ Foreground commands run at reduced CPU priority (nice, configurable) so the user
 		}
 	};
 
-	// Full self-contained Bash tool call renderer (animated spinner, timer, intent headers,
-	// background badges, redundant cd stripping, and expanded cwd display).
-	const renderCall = (
-		args: BashParams,
-		theme: Parameters<NonNullable<typeof builtin.renderCall>>[1],
-		context: Parameters<NonNullable<typeof builtin.renderCall>>[2],
-	) => {
-		return renderBashCall(
-			args as BashCallArgs,
-			theme,
-			context as Parameters<typeof renderBashCall>[2],
-			deps.renderOptions ?? {
-				intentMode: (process.env.PI_BASH_INTENT_MODE as BashCallRenderOptions["intentMode"]) || "render",
-			},
-		);
-	};
-
-	// Full self-contained Bash tool result renderer (streaming live preview,
-	// background task formatting, error results, quiet command detection, and truncation hints).
-	const renderResult = (
-		result: Record<string, unknown>,
-		options: BashResultRenderOptions,
-		theme: BashRenderTheme,
-		context?: unknown,
-	) => {
-		return renderBashResult(
-			result,
-			options,
-			theme,
-			context as Parameters<typeof renderBashResult>[3],
-		);
-	};
-
 	return {
 		...builtin,
 		name: "bash",
@@ -963,8 +927,6 @@ Foreground commands run at reduced CPU priority (nice, configurable) so the user
 		parameters: bashParams,
 		description: amendedDescription,
 		prepareArguments: (args: unknown) => normalizeBashArgs(args) as unknown,
-		renderCall,
-		renderResult,
 		execute: ourExecute,
 	} as unknown as ToolDefinition;
 }

@@ -63,7 +63,7 @@ try {
 	);
 
 	// ─── start a background task ─────────────────────────────────────────────
-	await terminal.submit("Start sleep 30 in the background using background=true with taskName e2e-tui. End your turn immediately — do not poll.");
+	await terminal.submit("Start sleep 30 as a background task using the background_task tool with taskName e2e-tui. End your turn immediately — do not poll.");
 	const DOCK_ROW = /[> ]\s*[●⏳✔✗]\s*\[\d{2}:\d{2}:\d{2}\]/;
 	const dockVisible = await waitUntil((screen) => DOCK_ROW.test(screen) && (screen.includes("e2e-tui") || screen.includes("sleep 30")), 20_000);
 	record("D1: dock row visible with taskName", dockVisible.ok);

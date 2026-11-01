@@ -56,7 +56,7 @@ try {
 
 	// 2. Start task 1
 	await terminal.submit(
-		'Start sleep 45 in the background using background=true with taskName proc-alpha. End your turn immediately — do not poll.',
+		'Start sleep 45 as a background task using the background_task tool with taskName proc-alpha. End your turn immediately — do not poll.',
 	);
 	const task1Visible = await waitUntil(
 		(screen) => screen.includes("proc-alpha") || screen.includes("sleep 45"),
@@ -66,7 +66,7 @@ try {
 
 	// 3. Start task 2
 	await terminal.submit(
-		'Start sleep 46 in the background using background=true with taskName proc-beta. End your turn immediately — do not poll.',
+		'Start sleep 46 as a background task using the background_task tool with taskName proc-beta. End your turn immediately — do not poll.',
 	);
 	const task2Visible = await waitUntil(
 		(screen) => (screen.includes("proc-beta") || screen.includes("sleep 46")) && (screen.includes("proc-alpha") || screen.includes("sleep 45")),

@@ -174,7 +174,7 @@ async function scenario2_foreground() {
 
 async function scenario3_background() {
 	await promptAndWait(
-		`Start the command "sleep 6" in the background using the bash tool's background parameter, with taskName "e2e-bg". Then end your turn immediately — do not poll.`,
+		`Start the command "sleep 6" in the background using the background_task tool, with taskName "e2e-bg". Then end your turn immediately — do not poll.`,
 	);
 	await waitFor(
 		() => bgStates().some((state) => state.kind === "terminal" && state.id === "task-1"),
@@ -187,7 +187,11 @@ async function scenario3_background() {
 		states.some((state) => state.kind === "spawned") && states.some((state) => state.kind === "terminal"),
 		JSON.stringify(states),
 	);
-	const messages = await messagesJson();
+	let messages = await messagesJson();
+	if (!messages.includes("bg-task-notification")) {
+		await sleep(2000);
+		messages = await messagesJson();
+	}
 	record(
 		"E2E-3b task notice wording exact",
 		messages.includes("Tool is running as a background task with task id: task-1"),
@@ -223,10 +227,10 @@ async function scenario4_adopt() {
 }
 
 async function scenario5_management() {
-	await promptAndWait(`List my background tasks, then kill the running one (taskAction list, then kill). End your turn after.`);
+	await promptAndWait(`List my background tasks using manage_background_task, then kill the running one. End your turn after.`);
 	const messages = await messagesJson();
 	const ok =
-		messages.includes("taskAction") &&
+		(messages.includes("manage_background_task") || messages.includes("manageBackgroundTask") || messages.includes("taskAction")) &&
 		(messages.includes("Killed task-") ||
 			messages.includes("No background tasks") ||
 			messages.includes("task-1") ||

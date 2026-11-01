@@ -83,7 +83,7 @@ try {
 	record("0: pi started", boot.ok);
 
 	// ── background task via the real model ──────────────────────────────────
-	await terminal.submit("Testing something, run a background task (sleep 12) using background=true");
+	await terminal.submit("Testing something, run a background task (sleep 12) using the background_task tool");
 	const spawned = await waitUntil((screen) => DOCK_ROW.test(screen), 15_000);
 	record("A1: dock row visible (task running)", spawned.ok, spawned.screen.slice(-90));
 	if (!spawned.ok) await finish();

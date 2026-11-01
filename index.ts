@@ -32,8 +32,6 @@ import { resolveBgConfig, resolveLogDir } from "./src/config.ts";
 import { debugLog, debugLogError, initDebugLog } from "./src/debug.ts";
 import { createTaskManager } from "./src/registry.ts";
 import {
-	createBackgroundAwareBashTool,
-	createForegroundBashTool,
 	createBackgroundTaskTool,
 	createManageBackgroundTaskTool,
 	getForeground,
@@ -45,7 +43,6 @@ import { DockController, installDock } from "./src/ui/dock.ts";
 import { DockEditor } from "./src/dock-editor.ts";
 import { formatDuration } from "./src/ui/format.ts";
 import { renderBgNotification } from "./src/ui/notification.ts";
-import { buildBashIntentSystemPrompt } from "./src/ui/bash-intent.ts";
 import type { BgNotificationDetails, BgTask, TaskManagerApi } from "./src/types.ts";
 
 /** True when the value looks like a persisted BgTask details payload. */
@@ -111,9 +108,8 @@ export function getSubagentLabel(ctx: ExtensionContext): string | undefined {
 }
 
 export default function (pi: ExtensionAPI) {
-	// Legacy PRD-001 state: active only when PRD-003 is not.
-	let legacyConfig: NiceConfig | undefined;
-	let overrideActive = false;
+	// PRD-001 state: nice priority for foreground bash commands.
+	let niceConfig: NiceConfig | undefined;
 	let isSubagentRuntime = false;
 
 	// PRD-003 session state.
@@ -127,22 +123,10 @@ export default function (pi: ExtensionAPI) {
 
 	// PRD-004 §7 — priority transport: the hook's entire body routes RPC/!
 	// shell executions into the masked tool's operations (fg nice). No control
-	// logic, no parsing (G4). Inert until the override activates this session.
+	// logic, no parsing (G4). Inert when bash is native.
 	pi.on("user_bash", () => {
 		const operations = getSharedOperations();
 		return operations ? { operations } : undefined;
-	});
-
-	// Opt-in: teach the bash intent-comment convention so the model supplies it
-	// without the user having to ask (when PI_BASH_INTENT_MODE=render-and-instruct).
-	pi.on("before_agent_start", async (event) => {
-		const mode = process.env.PI_BASH_INTENT_MODE;
-		if (mode === "render-and-instruct") {
-			const prompt = buildBashIntentSystemPrompt(event.systemPrompt);
-			if (prompt !== undefined) {
-				return { systemPrompt: prompt };
-			}
-		}
 	});
 
 	/** §6 — one structured entry per transition; RPC clients see entry_appended. */
@@ -157,20 +141,19 @@ export default function (pi: ExtensionAPI) {
 		}
 	};
 
-	// Legacy PRD-001 rewrite: only while the override is NOT active.
+	// PRD-001 hook: rewrite every model-issued bash command to run under nice.
+	// Native bash tool executes the rewritten command with native rendering.
 	pi.on("tool_call", (event) => {
-		if (overrideActive) return;
-		if (!legacyConfig || event.toolName !== "bash") return;
+		if (!niceConfig || event.toolName !== "bash") return;
 		const command = event.input.command;
 		if (typeof command !== "string") return;
-		const wrapped = buildNiceCommand(command, legacyConfig.level);
+		const wrapped = buildNiceCommand(command, niceConfig.level);
 		if (wrapped !== null) event.input.command = wrapped;
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
 		ctxRef = ctx;
-		overrideActive = false;
-		legacyConfig = undefined;
+		niceConfig = undefined;
 		registry = undefined;
 		disposeUI = undefined;
 		editorInstalled = false;
@@ -179,41 +162,37 @@ export default function (pi: ExtensionAPI) {
 		isSubagentRuntime = isSubagentSession(ctx);
 		const subagentName = isSubagentRuntime ? getSubagentLabel(ctx) : undefined;
 
+		// 1. Probe nice for native foreground bash rewrite
+		const resolvedNice = resolveConfig(process.env, process.platform);
+		if (!resolvedNice.disabled && resolvedNice.supportedPlatform) {
+			if (await probeNice(resolvedNice.level)) {
+				niceConfig = resolvedNice;
+			} else if (ctx.hasUI) {
+				ctx.ui.notify(
+					"pi-bash-process-priority: nice probe failed — commands run at normal priority this session",
+					"warning",
+				);
+			}
+		}
+
+		// 2. Background task configuration & priority probes
 		const bg = resolveBgConfig(process.env, process.platform);
 		initDebugLog(resolveLogDir(bg, ctx.cwd));
 		debugLog("session_start", { mode: ctx.mode, hasUI: ctx.hasUI, cwd: ctx.cwd, bgNice: bg.bgNice });
 
-		// Unsupported platform → exact PRD-001 behavior.
-		if (!bg.supportedPlatform) {
-			legacyConfig = resolveConfig(process.env, process.platform);
-			if (legacyConfig.disabled || !legacyConfig.supportedPlatform) return;
-			if (!(await probeNice(legacyConfig.level))) {
-				if (ctx.hasUI) {
-					ctx.ui.notify(
-						"pi-bash-process-priority: nice probe failed — commands run at normal priority this session",
-						"warning",
-					);
-				}
-				return;
-			}
-			return;
-		}
-
-		// PRD-003 path: probe priorities once, fail-open per claim (§7.4).
-		const [niceOk, reniceOk, ioniceOk] = await Promise.all([
-			probeNice(bg.fgNice),
+		const [reniceOk, ioniceOk] = await Promise.all([
 			probeRenice(bg.bgNice),
 			bg.ioniceClass > 0 ? probeIonice(bg.ioniceClass) : Promise.resolve(false),
 		]);
 		const warnings: string[] = [];
-		if (!niceOk) warnings.push("nice unavailable — commands run at normal priority");
+		if (!niceConfig && !resolvedNice.disabled) warnings.push("nice unavailable — commands run at normal priority");
 		if (!reniceOk) warnings.push("renice unavailable — ctrl+b adoption keeps the current nice level");
 		if (bg.ioniceClass > 0 && !ioniceOk) warnings.push("ionice unavailable — background IO class not applied");
 		if (ctx.hasUI) for (const w of warnings) ctx.ui.notify(`pi-bash-process-priority: ${w}`, "warning");
 
-		const fgNice = niceOk ? bg.fgNice : 0;
-		const bgNice = niceOk ? bg.bgNice : 0;
-		const ioniceClass = niceOk && ioniceOk ? bg.ioniceClass : 0;
+		const fgNice = niceConfig ? niceConfig.level : 0;
+		const bgNice = reniceOk ? bg.bgNice : 0;
+		const ioniceClass = ioniceOk ? bg.ioniceClass : 0;
 
 		const shared = (globalThis as any)[SHARED_TASK_MANAGER_KEY] as SharedRegistryEntry | undefined;
 		if (isSubagentRuntime && shared) {
@@ -334,7 +313,7 @@ export default function (pi: ExtensionAPI) {
 			// Rebuild is best-effort; a fresh empty registry is fine.
 		}
 
-		// Take over the built-in bash tool + register background_task and manage_background_task (+ aliases).
+		// Register background_task and manage_background_task (+ aliases) as independent tools.
 		try {
 			const callerType: "agent" | "subagent" = isSubagentRuntime ? "subagent" : "agent";
 			const toolDeps = {
@@ -348,20 +327,16 @@ export default function (pi: ExtensionAPI) {
 				bgTimeoutMax: bg.bgTimeoutMax,
 			};
 
-			pi.registerTool(createForegroundBashTool(ctx.cwd, toolDeps));
 			pi.registerTool(createBackgroundTaskTool(ctx.cwd, toolDeps, "background_task"));
 			pi.registerTool(createBackgroundTaskTool(ctx.cwd, toolDeps, "backgroundTask"));
 			pi.registerTool(createManageBackgroundTaskTool(toolDeps, "manage_background_task"));
 			pi.registerTool(createManageBackgroundTaskTool(toolDeps, "manageBackgroundTask"));
-			overrideActive = true;
 		} catch (error) {
-			// Fail back to the PRD-001 hook path entirely.
 			resetBashOverrideState();
 			registry = undefined;
-			legacyConfig = resolveConfig(process.env, process.platform);
 			if (ctx.hasUI) {
 				ctx.ui.notify(
-					`pi-bash-process-priority: bash override failed (${error instanceof Error ? error.message : String(error)}) — PRD-001 rewrite active`,
+					`pi-bash-process-priority: background tools registration failed (${error instanceof Error ? error.message : String(error)})`,
 					"warning",
 				);
 			}
@@ -487,8 +462,7 @@ export default function (pi: ExtensionAPI) {
 		}
 		registry = undefined;
 		resetBashOverrideState();
-		overrideActive = false;
-		legacyConfig = undefined;
+		niceConfig = undefined;
 		ctxRef = undefined;
 	});
 }
