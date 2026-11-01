@@ -115,6 +115,7 @@ export function getSharedOperations(): BashOperations | undefined {
 }
 
 export type TaskAction = "list" | "status" | "logs" | "kill" | "input" | "adopt";
+export const VALID_ACTIONS = new Set<TaskAction>(["list", "status", "logs", "kill", "input", "adopt"]);
 
 export interface TaskActionParams {
 	taskAction?: TaskAction;
@@ -141,6 +142,25 @@ function taskLine(task: BgTask): string {
 	return `${task.id}  ${task.command}  ${task.status}  (started ${clock(task.startedAt)})`;
 }
 
+export function isNilOrEmpty(val: unknown): boolean {
+	if (val === null || val === undefined) return true;
+	if (typeof val === "string") {
+		const t = val.trim().toLowerCase();
+		return t === "" || t === "null" || t === "undefined";
+	}
+	return false;
+}
+
+export function parseOptionalNumber(val: unknown): number | undefined {
+	if (isNilOrEmpty(val)) return undefined;
+	if (typeof val === "number" && Number.isFinite(val)) return val;
+	if (typeof val === "string") {
+		const parsed = Number(val.trim());
+		if (Number.isFinite(parsed)) return parsed;
+	}
+	return undefined;
+}
+
 /**
  * Management verbs on the Bash surface (PRD-004 §4.1 `taskAction`).
  * Pure delegation to the registry — no process work here.
@@ -149,8 +169,13 @@ export async function runTaskAction(
 	registry: TaskManagerApi,
 	params: TaskActionParams,
 ): Promise<TaskActionResult> {
-	const taskAction = params.action ?? params.taskAction;
-	if (!taskAction) {
+	const rawAction = !isNilOrEmpty(params.action)
+		? params.action
+		: !isNilOrEmpty(params.taskAction)
+			? params.taskAction
+			: undefined;
+	const taskAction = typeof rawAction === "string" ? (rawAction.trim().toLowerCase() as TaskAction) : undefined;
+	if (!taskAction || !VALID_ACTIONS.has(taskAction)) {
 		return { text: "Missing required parameter: action (list, status, logs, kill, input, adopt).", isError: true };
 	}
 
@@ -171,17 +196,18 @@ export async function runTaskAction(
 		};
 	}
 
-	const target = params.taskId;
+	const target = !isNilOrEmpty(params.taskId) && typeof params.taskId === "string" ? params.taskId.trim() : undefined;
 	if (!target) return { text: `Missing required parameter: taskId (for "${taskAction}").`, isError: true };
 	const task = registry.get(target);
 	if (!task) return { text: `Unknown task: ${target}.`, isError: true };
 
 	if (taskAction === "status" || taskAction === "logs") {
 		let log = await registry.logs(task.id);
-		if (params.lines && params.lines > 0) {
+		const lines = parseOptionalNumber(params.lines);
+		if (lines && lines > 0) {
 			const split = log.split("\n");
-			if (split.length > params.lines) {
-				log = split.slice(-params.lines).join("\n");
+			if (split.length > lines) {
+				log = split.slice(-lines).join("\n");
 			}
 		}
 		if (taskAction === "logs") {
@@ -194,7 +220,12 @@ export async function runTaskAction(
 		return { text: `Killed ${task.id} (${task.command})`, details: task };
 	}
 	// taskAction === "input"
-	if (params.input === undefined) {
+	if (
+		params.input === undefined ||
+		params.input === null ||
+		(typeof params.input === "string" &&
+			(params.input.trim().toLowerCase() === "null" || params.input.trim().toLowerCase() === "undefined"))
+	) {
 		return { text: `Missing required parameter: input (for "input").`, isError: true };
 	}
 	return { text: registry.sendInput(task.id, params.input), details: task };
@@ -224,21 +255,24 @@ export function formatBackgroundToolResult(task: BgTask): string {
  * clamp makes the model believe it has 999s when it has 60s).
  */
 export function validateTimeout(
-	timeout: number | undefined,
+	timeout: unknown,
 	background: boolean,
 	caps: { fg: number; bg: number },
 ): string | undefined {
-	if (timeout === undefined) return undefined;
+	if (isNilOrEmpty(timeout)) return undefined;
+	const num = typeof timeout === "number" ? timeout : Number(timeout);
+	if (!Number.isFinite(num)) {
+		return "Invalid timeout: must be a finite number of seconds.";
+	}
 	const cap = background ? caps.bg : caps.fg;
-	const label = background ? "background" : "foreground";
-	if (timeout > cap) {
+	if (num > cap) {
 		return (
 			background
-				? `Timeout ${timeout}s exceeds the background cap of ${cap}s (PI_BASH_TIMEOUT_BG_MAX).`
-				: `Timeout ${timeout}s exceeds the foreground cap of ${cap}s (PI_BASH_FG_TIMEOUT_MAX). For long-running work, set background=true (background cap: ${caps.bg}s) instead.`
+				? `Timeout ${num}s exceeds the background cap of ${cap}s (PI_BASH_TIMEOUT_BG_MAX).`
+				: `Timeout ${num}s exceeds the foreground cap of ${cap}s (PI_BASH_FG_TIMEOUT_MAX). For long-running work, set background=true (background cap: ${caps.bg}s) instead.`
 		);
 	}
-	if (timeout < 1) {
+	if (num < 1) {
 		return `Timeout must be at least 1 second.`;
 	}
 	return undefined;
@@ -266,9 +300,7 @@ export function normalizeBashArgs(raw: unknown): NormalizedBashArgs {
 	const str = (key: keyof NormalizedBashArgs): void => {
 		const value = args[key];
 		if (typeof value !== "string") return;
-		const trimmed = value.trim();
-		// Models sometimes emit literal "null"/"undefined" — treat as absent.
-		if (trimmed === "" || trimmed === "null" || trimmed === "undefined") return;
+		if (isNilOrEmpty(value)) return;
 		out[key] = value as never;
 	};
 
@@ -280,18 +312,23 @@ export function normalizeBashArgs(raw: unknown): NormalizedBashArgs {
 	str("taskId");
 	str("input");
 
-	if (typeof args.timeout === "number" && Number.isFinite(args.timeout)) {
-		out.timeout = args.timeout;
-	} else if (typeof args.timeout === "string" && args.timeout.trim() !== "" && !Number.isNaN(Number(args.timeout))) {
-		out.timeout = Number(args.timeout);
+	const timeout = parseOptionalNumber(args.timeout);
+	if (timeout !== undefined) {
+		out.timeout = timeout;
 	}
 
 	if (typeof args.background === "boolean") out.background = args.background;
-	else if (args.background === "true") out.background = true;
-	else if (args.background === "false") out.background = false;
+	else if (typeof args.background === "string") {
+		const b = args.background.trim().toLowerCase();
+		if (b === "true") out.background = true;
+		else if (b === "false") out.background = false;
+	}
 
-	if (typeof args.taskAction === "string" && TASK_ACTIONS.has(args.taskAction)) {
-		out.taskAction = args.taskAction as NormalizedBashArgs["taskAction"];
+	if (typeof args.taskAction === "string" && !isNilOrEmpty(args.taskAction)) {
+		const action = args.taskAction.trim().toLowerCase();
+		if (TASK_ACTIONS.has(action)) {
+			out.taskAction = action as NormalizedBashArgs["taskAction"];
+		}
 	}
 
 	return out;
@@ -312,18 +349,14 @@ export function normalizeBackgroundTaskArgs(raw: unknown): NormalizedBackgroundT
 
 	for (const key of ["command", "taskName", "cwd", "intent", "tool"] as const) {
 		const val = args[key];
-		if (typeof val === "string") {
-			const trimmed = val.trim();
-			if (trimmed !== "" && trimmed !== "null" && trimmed !== "undefined") {
-				out[key] = val;
-			}
+		if (typeof val === "string" && !isNilOrEmpty(val)) {
+			out[key] = val;
 		}
 	}
 
-	if (typeof args.timeout === "number" && Number.isFinite(args.timeout)) {
-		out.timeout = args.timeout;
-	} else if (typeof args.timeout === "string" && args.timeout.trim() !== "" && !Number.isNaN(Number(args.timeout))) {
-		out.timeout = Number(args.timeout);
+	const timeout = parseOptionalNumber(args.timeout);
+	if (timeout !== undefined) {
+		out.timeout = timeout;
 	}
 
 	return out;
@@ -336,17 +369,15 @@ export interface NormalizedManageBackgroundTaskArgs {
 	lines?: number;
 }
 
-const VALID_ACTIONS = new Set<TaskAction>(["list", "status", "logs", "kill", "input", "adopt"]);
-
 export function normalizeManageBackgroundTaskArgs(raw: unknown): NormalizedManageBackgroundTaskArgs {
 	const args = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
 	const out: NormalizedManageBackgroundTaskArgs = {};
 
 	const actionRaw =
-		typeof args.action === "string"
-			? args.action.trim()
-			: typeof args.taskAction === "string"
-				? args.taskAction.trim()
+		!isNilOrEmpty(args.action) && typeof args.action === "string"
+			? args.action.trim().toLowerCase()
+			: !isNilOrEmpty(args.taskAction) && typeof args.taskAction === "string"
+				? args.taskAction.trim().toLowerCase()
 				: undefined;
 	if (actionRaw && VALID_ACTIONS.has(actionRaw as TaskAction)) {
 		out.action = actionRaw as TaskAction;
@@ -354,18 +385,14 @@ export function normalizeManageBackgroundTaskArgs(raw: unknown): NormalizedManag
 
 	for (const key of ["taskId", "input"] as const) {
 		const val = args[key];
-		if (typeof val === "string") {
-			const trimmed = val.trim();
-			if (trimmed !== "" && trimmed !== "null" && trimmed !== "undefined") {
-				out[key] = val;
-			}
+		if (typeof val === "string" && !isNilOrEmpty(val)) {
+			out[key] = val;
 		}
 	}
 
-	if (typeof args.lines === "number" && Number.isFinite(args.lines)) {
-		out.lines = args.lines;
-	} else if (typeof args.lines === "string" && args.lines.trim() !== "" && !Number.isNaN(Number(args.lines))) {
-		out.lines = Number(args.lines);
+	const lines = parseOptionalNumber(args.lines);
+	if (lines !== undefined) {
+		out.lines = lines;
 	}
 
 	return out;
@@ -467,12 +494,13 @@ function startKill(child: ChildProcess, graceMs: number): NodeJS.Timeout | undef
 	return timer;
 }
 
-function resolveTimeoutMs(timeout: number | undefined): number | undefined {
-	if (timeout === undefined) return undefined;
-	if (!Number.isFinite(timeout) || timeout <= 0) {
+function resolveTimeoutMs(timeout: unknown): number | undefined {
+	if (isNilOrEmpty(timeout)) return undefined;
+	const num = typeof timeout === "number" ? timeout : Number(timeout);
+	if (!Number.isFinite(num) || num <= 0) {
 		throw new Error("Invalid timeout: must be a finite number of seconds");
 	}
-	const timeoutMs = timeout * 1000;
+	const timeoutMs = num * 1000;
 	if (timeoutMs > 2_147_483_647) {
 		throw new Error("Invalid timeout: maximum is 2147483 seconds");
 	}
@@ -708,21 +736,34 @@ export function createBackgroundAwareBashTool(cwd: string, deps: BashOverrideDep
 				"The exact command line to execute. A leading `cd <current-directory> &&` for the current directory is dropped automatically.",
 		}),
 		timeout: Type.Optional(
-			Type.Number({
+			Type.Union([
+				Type.Number(),
+				Type.Null(),
+				Type.String(),
+			], {
 				description: `Optional. Max seconds to run (cap: ${fgCap}s). Large values are rejected. For long-running commands, use background_task.`,
 			}),
 		),
 		cwd: Type.Optional(
-			Type.String({ description: "Optional working directory. Defaults to the current execution directory." }),
+			Type.Union([
+				Type.String(),
+				Type.Null(),
+			], { description: "Optional working directory. Defaults to the current execution directory." }),
 		),
 		intent: Type.Optional(
-			Type.String({
+			Type.Union([
+				Type.String(),
+				Type.Null(),
+			], {
 				description:
 					"Optional short intent shown as the call header by compatible renderers (e.g. pi-ui-enhancement), e.g. 'check which files are dirty'.",
 			}),
 		),
 		tool: Type.Optional(
-			Type.String({
+			Type.Union([
+				Type.String(),
+				Type.Null(),
+			], {
 				description:
 					"Optional header label shown by compatible renderers (e.g. pi-ui-enhancement), e.g. 'git status'.",
 			}),
@@ -735,17 +776,17 @@ export function createBackgroundAwareBashTool(cwd: string, deps: BashOverrideDep
 
 	type BashParams = {
 		command?: string;
-		timeout?: number;
-		background?: boolean;
-		taskName?: string;
-		cwd?: string;
-		intent?: string;
-		tool?: string;
-		taskAction?: TaskAction;
-		action?: TaskAction;
-		taskId?: string;
-		input?: string;
-		lines?: number;
+		timeout?: number | string | null;
+		background?: boolean | string | null;
+		taskName?: string | null;
+		cwd?: string | null;
+		intent?: string | null;
+		tool?: string | null;
+		taskAction?: TaskAction | string | null;
+		action?: TaskAction | string | null;
+		taskId?: string | null;
+		input?: string | null;
+		lines?: number | string | null;
 	};
 
 	const amendedDescription = `Execute a shell command in the session's workspace in the foreground.
@@ -777,10 +818,15 @@ Foreground commands run at reduced CPU priority (nice, configurable) so the user
 		onUpdate: Parameters<typeof builtin.execute>[3],
 		ctx: Parameters<typeof builtin.execute>[4],
 	): Promise<unknown> => {
+		const effectiveTimeout = parseOptionalNumber(params?.timeout);
+		const isBackground =
+			params?.background === true ||
+			(typeof params?.background === "string" && params.background.trim().toLowerCase() === "true");
+
 		// ---- timeout validation (reject, never clamp) --------------------
 		const timeoutProblem = validateTimeout(
-			params.timeout,
-			params.background === true,
+			effectiveTimeout,
+			isBackground,
 			{ fg: fgCap, bg: bgCap },
 		);
 		if (timeoutProblem) {
@@ -791,12 +837,18 @@ Foreground commands run at reduced CPU priority (nice, configurable) so the user
 		}
 
 		// ---- fail-open management branch if model called bash with taskAction ----
-		if (params.taskAction || params.action) {
+		const rawAction = !isNilOrEmpty(params?.action)
+			? params.action
+			: !isNilOrEmpty(params?.taskAction)
+				? params.taskAction
+				: undefined;
+		const effectiveAction = typeof rawAction === "string" ? rawAction.trim().toLowerCase() : undefined;
+		if (effectiveAction && VALID_ACTIONS.has(effectiveAction as TaskAction)) {
 			const outcome = await runTaskAction(deps.registry, {
-				taskAction: params.action ?? params.taskAction,
-				taskId: params.taskId,
-				input: params.input,
-				lines: params.lines,
+				taskAction: effectiveAction as TaskAction,
+				taskId: !isNilOrEmpty(params.taskId) && typeof params.taskId === "string" ? params.taskId.trim() : undefined,
+				input: isNilOrEmpty(params.input) ? undefined : typeof params.input === "string" ? params.input : String(params.input),
+				lines: parseOptionalNumber(params.lines),
 			});
 			return {
 				content: [{ type: "text", text: outcome.text }],
@@ -804,7 +856,7 @@ Foreground commands run at reduced CPU priority (nice, configurable) so the user
 				isError: outcome.isError === true,
 			};
 		}
-		if (params.command === undefined || params.command.trim() === "") {
+		if (isNilOrEmpty(params?.command)) {
 			return {
 				content: [{ type: "text", text: "Missing required parameter: command." }],
 				isError: true,
@@ -812,18 +864,20 @@ Foreground commands run at reduced CPU priority (nice, configurable) so the user
 		}
 
 		// PRD-004 §4.1: drop a redundant `cd <current-dir> &&` and resolve cwd.
-		const effectiveCwd = params.cwd?.trim() ? params.cwd : cwd;
-		const command = stripCdPrefix(params.command, effectiveCwd);
+		const rawCwd = !isNilOrEmpty(params.cwd) && typeof params.cwd === "string" ? params.cwd.trim() : undefined;
+		const effectiveCwd = rawCwd && rawCwd !== "" ? rawCwd : cwd;
+		const command = stripCdPrefix(String(params.command), effectiveCwd);
 
 		// ---- fail-open background branch if model called bash with background: true ----
-		if (params.background) {
-			const timeoutSeconds = params.timeout;
+		if (isBackground) {
+			const timeoutSeconds = effectiveTimeout;
 			const isSubagent = deps.callerType === "subagent" || (ctx ? !ctx.hasUI : false);
 			const callerType = isSubagent ? "subagent" : (deps.callerType ?? "agent");
 			const subagentName =
 				deps.subagentName ?? (isSubagent && ctx ? ctx.sessionManager?.getSessionName?.() : undefined);
+			const taskName = !isNilOrEmpty(params.taskName) && typeof params.taskName === "string" ? params.taskName.trim() : undefined;
 			const task = await deps.registry.run(command, effectiveCwd, {
-				name: params.taskName,
+				name: taskName,
 				callerType,
 				subagentName,
 				timeoutSeconds,
@@ -836,7 +890,7 @@ Foreground commands run at reduced CPU priority (nice, configurable) so the user
 		}
 
 		// ---- foreground branch: validated timeout, cwd override, race ----
-		const clampedTimeout = params.timeout;
+		const clampedTimeout = effectiveTimeout;
 		if (effectiveCwd !== cwd) cwdOverrides.set(toolCallId, effectiveCwd);
 
 		let resolveBg!: (task: BgTask) => void;
@@ -934,28 +988,44 @@ export function createBackgroundTaskTool(
 					"The exact command line to run in the background. A leading `cd <current-directory> &&` for the current directory is dropped automatically.",
 			}),
 			taskName: Type.Optional(
-				Type.String({
+				Type.Union([
+					Type.String(),
+					Type.Null(),
+				], {
 					description:
 						"Optional short human-readable label for the background task (shown in the task list and notifications).",
 				}),
 			),
 			timeout: Type.Optional(
-				Type.Number({
+				Type.Union([
+					Type.Number(),
+					Type.Null(),
+					Type.String(),
+				], {
 					description: `Optional timeout in seconds (cap: ${bgCap}s). A timeout above this cap is rejected.`,
 				}),
 			),
 			cwd: Type.Optional(
-				Type.String({
+				Type.Union([
+					Type.String(),
+					Type.Null(),
+				], {
 					description: "Optional working directory. Defaults to the current execution directory.",
 				}),
 			),
 			intent: Type.Optional(
-				Type.String({
+				Type.Union([
+					Type.String(),
+					Type.Null(),
+				], {
 					description: "Optional short intent description.",
 				}),
 			),
 			tool: Type.Optional(
-				Type.String({
+				Type.Union([
+					Type.String(),
+					Type.Null(),
+				], {
 					description: "Optional header label.",
 				}),
 			),
@@ -973,33 +1043,37 @@ export function createBackgroundTaskTool(
 		_onUpdate: unknown,
 		ctx: unknown,
 	) => {
-		const timeoutProblem = validateTimeout(params.timeout, true, { fg: fgCap, bg: bgCap });
+		const effectiveTimeout = parseOptionalNumber(params?.timeout);
+		const timeoutProblem = validateTimeout(effectiveTimeout, true, { fg: fgCap, bg: bgCap });
 		if (timeoutProblem) {
 			return {
 				content: [{ type: "text", text: timeoutProblem }],
 				isError: true,
 			};
 		}
-		if (!params.command || params.command.trim() === "") {
+		if (isNilOrEmpty(params?.command)) {
 			return {
 				content: [{ type: "text", text: "Missing required parameter: command." }],
 				isError: true,
 			};
 		}
 
-		const effectiveCwd = params.cwd?.trim() ? params.cwd : cwd;
-		const command = stripCdPrefix(params.command, effectiveCwd);
+		const rawCwd = !isNilOrEmpty(params.cwd) && typeof params.cwd === "string" ? params.cwd.trim() : undefined;
+		const effectiveCwd = rawCwd && rawCwd !== "" ? rawCwd : cwd;
+		const command = stripCdPrefix(String(params.command), effectiveCwd);
 
 		const isSubagent = deps.callerType === "subagent" || (ctx ? !(ctx as any).hasUI : false);
 		const callerType = isSubagent ? "subagent" : (deps.callerType ?? "agent");
 		const subagentName =
 			deps.subagentName ?? (isSubagent && ctx ? (ctx as any).sessionManager?.getSessionName?.() : undefined);
 
+		const taskName = !isNilOrEmpty(params.taskName) && typeof params.taskName === "string" ? params.taskName.trim() : undefined;
+
 		const task = await deps.registry.run(command, effectiveCwd, {
-			name: params.taskName,
+			name: taskName,
 			callerType,
 			subagentName,
-			timeoutSeconds: params.timeout,
+			timeoutSeconds: effectiveTimeout,
 		});
 
 		return {
@@ -1076,13 +1150,23 @@ export function createManageBackgroundTaskTool(
 				{ description: "Management action to perform: list, status, logs, kill, input, adopt." },
 			),
 			taskId: Type.Optional(
-				Type.String({ description: 'Task id such as "task-1" (required for status, logs, kill, input).' }),
+				Type.Union([
+					Type.String(),
+					Type.Null(),
+				], { description: 'Task id such as "task-1" (required for status, logs, kill, input).' }),
 			),
 			input: Type.Optional(
-				Type.String({ description: "Text to write to the task stdin (required for action 'input', newline appended)." }),
+				Type.Union([
+					Type.String(),
+					Type.Null(),
+				], { description: "Text to write to the task stdin (required for action 'input', newline appended)." }),
 			),
 			lines: Type.Optional(
-				Type.Number({ description: "Optional maximum number of lines to return for status or logs." }),
+				Type.Union([
+					Type.Number(),
+					Type.Null(),
+					Type.String(),
+				], { description: "Optional maximum number of lines to return for status or logs." }),
 			),
 		},
 		{
@@ -1098,19 +1182,28 @@ export function createManageBackgroundTaskTool(
 		_onUpdate: unknown,
 		_ctx: unknown,
 	) => {
-		const action = params.action;
-		if (!action) {
+		const rawAction = !isNilOrEmpty(params?.action)
+			? params.action
+			: !isNilOrEmpty((params as any)?.taskAction)
+				? (params as any).taskAction
+				: undefined;
+		const action = typeof rawAction === "string" ? rawAction.trim().toLowerCase() : undefined;
+		if (!action || !VALID_ACTIONS.has(action as TaskAction)) {
 			return {
 				content: [{ type: "text", text: "Missing required parameter: action (list, status, logs, kill, input, adopt)." }],
 				isError: true,
 			};
 		}
 
+		const taskId = !isNilOrEmpty(params.taskId) && typeof params.taskId === "string" ? params.taskId.trim() : undefined;
+		const input = isNilOrEmpty(params.input) ? undefined : typeof params.input === "string" ? params.input : String(params.input);
+		const lines = parseOptionalNumber(params.lines);
+
 		const outcome = await runTaskAction(deps.registry, {
-			action,
-			taskId: params.taskId,
-			input: params.input,
-			lines: params.lines,
+			action: action as TaskAction,
+			taskId,
+			input,
+			lines,
 		});
 
 		return {

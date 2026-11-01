@@ -196,3 +196,80 @@ test("createManageBackgroundTaskTool: handles list, status, and kill directly", 
 		await reg.disposeAll();
 	}
 });
+
+test("createForegroundBashTool: executes successfully when optional inputs are null, '', 'null', 'NULL' (codemode test case)", async () => {
+	const { createForegroundBashTool } = await import("../src/bash-override.ts");
+	const reg = createTaskManager({ logDir: "/tmp/bg-tests-codemode", killGraceMs: 100, logBytes: 4096, maxFinished: 5 });
+	try {
+		const tool = createForegroundBashTool(process.cwd(), {
+			registry: reg,
+			fgNice: 10,
+		});
+
+		// 1. Exact user codemode test case:
+		const res1 = (await (tool.execute as any)("call-cm-1", {
+			command: "echo out; echo err >&2; exit 7",
+			timeout: null,
+			cwd: null,
+		})) as any;
+		assert.equal(res1.structuredContent?.exit_code, 7);
+		assert.equal(res1.structuredContent?.output, "out\nerr\n");
+		assert.match(res1.content[0].text, /out/);
+		assert.match(res1.content[0].text, /err/);
+		assert.match(res1.content[0].text, /Command exited with code 7/);
+
+		// 2. Case with "NULL" and "null":
+		const res2 = (await (tool.execute as any)("call-cm-2", {
+			command: "echo out; echo err >&2; exit 7",
+			timeout: "NULL",
+			cwd: "null",
+		})) as any;
+		assert.equal(res2.structuredContent?.exit_code, 7);
+		assert.equal(res2.structuredContent?.output, "out\nerr\n");
+
+		// 3. Case with "":
+		const res3 = (await (tool.execute as any)("call-cm-3", {
+			command: "echo ok",
+			timeout: "",
+			cwd: "",
+		})) as any;
+		assert.match(res3.content[0].text, /ok/);
+	} finally {
+		await reg.disposeAll();
+	}
+});
+
+test("createBackgroundTaskTool and createManageBackgroundTaskTool: support null, '', 'null', 'NULL'", async () => {
+	const { createBackgroundTaskTool, createManageBackgroundTaskTool } = await import("../src/bash-override.ts");
+	const reg = createTaskManager({ logDir: "/tmp/bg-tests-nil-opts", killGraceMs: 100, logBytes: 4096, maxFinished: 5 });
+	try {
+		const bgTool = createBackgroundTaskTool(process.cwd(), { registry: reg, fgNice: 10 });
+		const manageTool = createManageBackgroundTaskTool({ registry: reg, fgNice: 10 });
+
+		// Background task with nulls and NULLs
+		for (const nilVal of [null, "", "null", "NULL"]) {
+			const res = await (bgTool.execute as any)(`call-bg-${nilVal}`, {
+				command: "sleep 1",
+				timeout: nilVal,
+				cwd: nilVal,
+				taskName: nilVal,
+			});
+			assert.equal(res.isError, false);
+			assert.match(res.content[0].text, /background task/);
+		}
+
+		// Manage task with nulls and NULLs
+		for (const nilVal of [null, "", "null", "NULL"]) {
+			const res = await (manageTool.execute as any)(`call-mg-${nilVal}`, {
+				action: "list",
+				taskId: nilVal,
+				lines: nilVal,
+				input: nilVal,
+			});
+			assert.equal(res.isError, false);
+			assert.match(res.content[0].text, /task-/);
+		}
+	} finally {
+		await reg.disposeAll();
+	}
+});

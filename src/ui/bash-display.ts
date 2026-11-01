@@ -211,9 +211,11 @@ function stripDisplayCd(command: string, dirs: (string | undefined)[]): string {
 }
 
 function cleanOptionalText(value: unknown): string {
+	if (value === null || value === undefined) return "";
 	if (typeof value !== "string") return "";
 	const trimmed = value.trim();
-	if (trimmed === "" || trimmed === "null" || trimmed === "undefined") return "";
+	const lower = trimmed.toLowerCase();
+	if (lower === "" || lower === "null" || lower === "undefined") return "";
 	return value;
 }
 

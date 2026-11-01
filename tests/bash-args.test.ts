@@ -58,3 +58,28 @@ test("normalizeBashArgs: non-object input yields empty object", () => {
 	assert.deepEqual(normalizeBashArgs(null), {});
 	assert.deepEqual(normalizeBashArgs("nope"), {});
 });
+
+test("normalizeBashArgs: supports optional inputs as '', null, 'null', 'NULL', 'Null', 'undefined'", () => {
+	for (const nilVal of ["", null, "null", "NULL", "Null", "undefined", "UNDEFINED"]) {
+		const out = normalizeBashArgs({
+			command: "echo test",
+			cwd: nilVal,
+			timeout: nilVal,
+			intent: nilVal,
+			tool: nilVal,
+			taskName: nilVal,
+			taskAction: nilVal,
+			taskId: nilVal,
+			input: nilVal,
+		});
+		assert.equal(out.command, "echo test");
+		assert.equal(out.cwd, undefined, `cwd should be undefined for ${JSON.stringify(nilVal)}`);
+		assert.equal(out.timeout, undefined, `timeout should be undefined for ${JSON.stringify(nilVal)}`);
+		assert.equal(out.intent, undefined, `intent should be undefined for ${JSON.stringify(nilVal)}`);
+		assert.equal(out.tool, undefined, `tool should be undefined for ${JSON.stringify(nilVal)}`);
+		assert.equal(out.taskName, undefined, `taskName should be undefined for ${JSON.stringify(nilVal)}`);
+		assert.equal(out.taskAction, undefined, `taskAction should be undefined for ${JSON.stringify(nilVal)}`);
+		assert.equal(out.taskId, undefined, `taskId should be undefined for ${JSON.stringify(nilVal)}`);
+		assert.equal(out.input, undefined, `input should be undefined for ${JSON.stringify(nilVal)}`);
+	}
+});

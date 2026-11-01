@@ -26,3 +26,10 @@ test("validateTimeout: over-cap background is rejected with the bg cap named", (
 test("validateTimeout: sub-second timeouts rejected", () => {
 	assert.match(validateTimeout(0, false, CAPS) ?? "", /at least 1 second/);
 });
+
+test("validateTimeout: treats '', null, 'null', 'NULL', 'Null', 'undefined' as absent (no error)", () => {
+	for (const nilVal of ["", null, "null", "NULL", "Null", "undefined", "UNDEFINED"]) {
+		assert.equal(validateTimeout(nilVal, false, CAPS), undefined, `foreground should treat ${JSON.stringify(nilVal)} as absent`);
+		assert.equal(validateTimeout(nilVal, true, CAPS), undefined, `background should treat ${JSON.stringify(nilVal)} as absent`);
+	}
+});

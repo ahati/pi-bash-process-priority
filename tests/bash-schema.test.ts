@@ -157,3 +157,40 @@ test("normalizeManageBackgroundTaskArgs: maps taskAction to action and normalize
 	});
 	assert.equal("action" in unknownAction, false);
 });
+
+test("schemas: accept nulls for optional inputs", () => {
+	const { bash, backgroundTask, manageBackgroundTask } = createTools();
+	assert.equal(valid(bash, { command: "ls", timeout: null, cwd: null, intent: null, tool: null }), true);
+	assert.equal(valid(backgroundTask, { command: "sleep 5", timeout: null, cwd: null, taskName: null, intent: null, tool: null }), true);
+	assert.equal(valid(manageBackgroundTask, { action: "list", taskId: null, input: null, lines: null }), true);
+});
+
+test("normalizeBackgroundTaskArgs and normalizeManageBackgroundTaskArgs: drop '', null, 'null', 'NULL', 'Null', 'undefined'", () => {
+	for (const nilVal of ["", null, "null", "NULL", "Null", "undefined", "UNDEFINED"]) {
+		const bg = normalizeBackgroundTaskArgs({
+			command: "sleep 1",
+			taskName: nilVal,
+			timeout: nilVal,
+			cwd: nilVal,
+			intent: nilVal,
+			tool: nilVal,
+		});
+		assert.equal(bg.command, "sleep 1");
+		assert.equal(bg.taskName, undefined);
+		assert.equal(bg.timeout, undefined);
+		assert.equal(bg.cwd, undefined);
+		assert.equal(bg.intent, undefined);
+		assert.equal(bg.tool, undefined);
+
+		const mg = normalizeManageBackgroundTaskArgs({
+			action: "status",
+			taskId: nilVal,
+			input: nilVal,
+			lines: nilVal,
+		});
+		assert.equal(mg.action, "status");
+		assert.equal(mg.taskId, undefined);
+		assert.equal(mg.input, undefined);
+		assert.equal(mg.lines, undefined);
+	}
+});
