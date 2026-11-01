@@ -256,3 +256,137 @@ test("formatCwdAndLog: renders Cwd and Log lines", () => {
 	assert.equal(lines[0], "Cwd: /home/hati/workspace");
 	assert.equal(lines[1], "Log: /home/hati/workspace/.pi/bg-tasks/task-2.log");
 });
+
+test("merged Master-Detail screen renders master list, details (with Cwd and Log) and Output together", () => {
+	const task1 = makeTask({
+		id: "task-1",
+		name: "test-alpha",
+		command: "sleep 10",
+		status: "completed",
+		exitCode: 0,
+		cwd: "/workspace/alpha",
+		logPath: "/tmp/task-1.log",
+	});
+	const task2 = makeTask({
+		id: "task-2",
+		name: "test-beta",
+		command: "sleep 20",
+		status: "running",
+		cwd: "/workspace/beta",
+		logPath: "/tmp/task-2.log",
+	});
+	const all = [task1, task2];
+	const controller = new DockController(
+		() => all.filter((t) => t.status === "running"),
+		() => all,
+	);
+	controller.expandTasks("task-1");
+
+	const calls: any[] = [];
+	const fakeCtx = {
+		ui: {
+			setWidget(_key: string, fn: any) {
+				calls.push(fn);
+			},
+		},
+	};
+	const fakeRegistry = {
+		list: () => all,
+		onChange: () => () => {},
+	};
+
+	installDock(fakeCtx as any, fakeRegistry as any, controller);
+	const widgetFactory = calls[calls.length - 1];
+	const theme = {
+		fg: (_c: string, t: string) => `\x1b[34m${t}\x1b[39m`,
+		bold: (t: string) => `\x1b[1m${t}\x1b[22m`,
+	};
+	const widget = widgetFactory({ terminal: { rows: 30 }, requestRender() {} }, theme);
+	const lines = widget.render(140);
+
+	// 1. Header & subtitle
+	assert.ok(lines.some((l: string) => l.includes("Background Tasks")));
+	assert.ok(lines.some((l: string) => l.includes("2 tasks  current session branch")));
+
+	// 2. Both tasks in master list
+	assert.ok(lines.some((l: string) => l.includes("test-alpha") && l.includes("task-1")));
+	assert.ok(lines.some((l: string) => l.includes("test-beta") && l.includes("task-2")));
+
+	// 3. Task Details section with Cwd and Log
+	assert.ok(lines.some((l: string) => l.includes("Task Details")));
+	assert.ok(lines.some((l: string) => l.includes("Command:") && l.includes("sleep 10")));
+	assert.ok(lines.some((l: string) => l.includes("Cwd:") && l.includes("/workspace/alpha")));
+	assert.ok(lines.some((l: string) => l.includes("Log:") && l.includes("/tmp/task-1.log")));
+
+	// 4. Output section
+	assert.ok(lines.some((l: string) => l === "Output"));
+});
+
+test("reactive selection change: moving index updates Command, Cwd, Log, and Output reactively", () => {
+	const task1 = makeTask({
+		id: "task-1",
+		name: "test-alpha",
+		command: "sleep 10",
+		status: "completed",
+		exitCode: 0,
+		cwd: "/workspace/alpha",
+		logPath: "/tmp/task-1.log",
+	});
+	const task2 = makeTask({
+		id: "task-2",
+		name: "test-beta",
+		command: "sleep 20",
+		status: "running",
+		cwd: "/workspace/beta",
+		logPath: "/tmp/task-2.log",
+	});
+	const all = [task1, task2];
+	const controller = new DockController(
+		() => all.filter((t) => t.status === "running"),
+		() => all,
+	);
+	controller.expandTasks("task-1");
+
+	const calls: any[] = [];
+	const fakeCtx = {
+		ui: {
+			setWidget(_key: string, fn: any) {
+				calls.push(fn);
+			},
+		},
+	};
+	const fakeRegistry = {
+		list: () => all,
+		onChange: () => () => {},
+	};
+
+	installDock(fakeCtx as any, fakeRegistry as any, controller);
+	const widgetFactory = calls[calls.length - 1];
+	const theme = {
+		fg: (_c: string, t: string) => `\x1b[34m${t}\x1b[39m`,
+		bold: (t: string) => `\x1b[1m${t}\x1b[22m`,
+	};
+	const widget = widgetFactory({ terminal: { rows: 30 }, requestRender() {} }, theme);
+
+	// Initially task 1 selected
+	let lines = widget.render(100);
+	assert.ok(lines.some((l: string) => l.includes(">") && l.includes("test-alpha")));
+	assert.ok(lines.some((l: string) => l.includes("Cwd:") && l.includes("/workspace/alpha")));
+	assert.ok(lines.some((l: string) => l.includes("Log:") && l.includes("/tmp/task-1.log")));
+
+	// Move selection down to task 2
+	controller.move(1);
+	lines = widget.render(100);
+	assert.ok(lines.some((l: string) => l.includes(">") && l.includes("test-beta")));
+	assert.ok(lines.some((l: string) => l.includes("Command:") && l.includes("sleep 20")));
+	assert.ok(lines.some((l: string) => l.includes("Cwd:") && l.includes("/workspace/beta")));
+	assert.ok(lines.some((l: string) => l.includes("Log:") && l.includes("/tmp/task-2.log")));
+
+	// Move selection back up to task 1
+	controller.move(-1);
+	lines = widget.render(100);
+	assert.ok(lines.some((l: string) => l.includes(">") && l.includes("test-alpha")));
+	assert.ok(lines.some((l: string) => l.includes("Command:") && l.includes("sleep 10")));
+	assert.ok(lines.some((l: string) => l.includes("Cwd:") && l.includes("/workspace/alpha")));
+	assert.ok(lines.some((l: string) => l.includes("Log:") && l.includes("/tmp/task-1.log")));
+});

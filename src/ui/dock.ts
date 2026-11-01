@@ -1,36 +1,38 @@
 /**
- * Dock widget below the editor (PRD-003 §4.1, §7.7–§7.8).
+ * Unified Background Tasks Dock & Master-Detail UI.
  *
- * Uses a component factory — pi calls `render(width)` with the CURRENT
- * available width on every render pass, so the bottom rule and elapsed time
- * resize dynamically with the terminal. The 1-second ticker triggers
- * `requestRender()` so the elapsed time ticks live.
+ * Implements:
+ * 1. Compact 3-row clamped dock below editor for active running tasks.
+ * 2. Unified Master-Detail screen for /tasks and task inspection:
+ *    - Top: Master list of tasks with completion markers (✓, ●, ✗), duration, and task ID.
+ *    - Bottom: Live Task Details group (Command, Status, Type, Started, Cwd, Log)
+ *      and live scrollable Output tail for whichever task is currently selected.
+ * 3. Reactive selection tracking: moving the `>` cursor (↑/↓ or mouse click)
+ *    immediately updates the details, Cwd, Log, and Output tail in real time.
  */
+
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import type { Component, TUI, TuiMouseEvent } from "@earendil-works/pi-tui";
+import { truncateToWidth } from "@earendil-works/pi-tui";
+
 import type { BgTask, TaskManagerApi } from "../types.ts";
 import {
-	detailLines,
-	formatClock,
-	formatDuration,
-	formatOutputStatusLine,
-	taskStatusIcon,
-	formatHeaderLine,
+	dockRow,
 	formatCleanTaskRow,
-	formatCwdAndLog,
+	formatHeaderLine,
+	formatOutputStatusLine,
+	RULE_CHAR,
+	taskMetadataLines,
 } from "./format.ts";
 import { boundedRead, DETAIL_TAIL_BYTES, toOutputLines } from "../log-reader.ts";
 import { debugLog } from "../debug.ts";
-import { truncateToWidth } from "@earendil-works/pi-tui";
-import type { Component, TUI, TuiMouseEvent } from "@earendil-works/pi-tui";
-import { enableTerminalMouse, disableTerminalMouse, type WritableTerminalHost } from "./terminal-mouse.ts";
+import { disableTerminalMouse, enableTerminalMouse, type WritableTerminalHost } from "./terminal-mouse.ts";
 
 export const DOCK_WIDGET_KEY = "bg-tasks";
 export const MAX_DOCK_VISIBLE = 3;
 
-const RULE_CHAR = "\u2500";
-
 export interface DockOptions {
-	/** Color function for the dock's bottom rule (matches the editor frame). */
+	/** Color function for the dock's divider rule. */
 	borderColor?: (text: string) => string;
 	/** Fallback accessor for the TUI instance if capturedTui is not yet set. */
 	getTui?: () => TUI | undefined;
@@ -45,9 +47,11 @@ export class DockController {
 	private expanded = false;
 	private view: "list" | "detail" = "list";
 	private detailTask: BgTask | undefined;
-	private detailScroll = 0;
-	private detailFollow = true;
-	private detailMaxScroll = 0;
+
+	// Output log scroll state
+	private logScroll = 0;
+	private logFollow = true;
+	private logMaxScroll = 0;
 
 	constructor(getRunningTasks: () => BgTask[], getAllTasks?: () => BgTask[]) {
 		this.getRunningTasks = getRunningTasks;
@@ -55,14 +59,18 @@ export class DockController {
 	}
 
 	getTasks(): BgTask[] {
-		return this.expanded ? this.getAllTasks() : this.getRunningTasks();
+		return this.isExpanded() ? this.getAllTasks() : this.getRunningTasks();
+	}
+
+	getAllTasksList(): BgTask[] {
+		return this.getAllTasks();
 	}
 
 	isExpanded(): boolean {
-		return this.expanded;
+		return this.expanded || this.view === "detail";
 	}
 
-	expandTasks(): boolean {
+	expandTasks(taskId?: string): boolean {
 		const all = this.getAllTasks();
 		if (all.length === 0) {
 			return false;
@@ -71,21 +79,84 @@ export class DockController {
 		this.active = true;
 		this.view = "list";
 		this.detailTask = undefined;
-		this.index = 0;
-		this.listOffset = 0;
+
+		if (taskId) {
+			const idx = all.findIndex((t) => t.id === taskId);
+			if (idx >= 0) {
+				this.index = idx;
+			} else {
+				this.index = 0;
+			}
+		} else if (this.index >= all.length) {
+			this.index = 0;
+		}
+
+		this.logScroll = 0;
+		this.logFollow = true;
+		this.reconcile();
 		return true;
 	}
 
 	collapseTasks(): void {
 		this.expanded = false;
-		if (this.view === "detail") {
-			this.closeDetail();
-		}
+		this.view = "list";
+		this.detailTask = undefined;
 		this.reconcile();
 	}
 
+	/** Detail view and expanded view are unified into the master-detail screen. */
+	openDetail(task?: BgTask): void {
+		const all = this.getAllTasks();
+		const t = task ?? this.selected() ?? all[0];
+		if (!t) return;
+		this.active = true;
+		this.view = "detail";
+		this.detailTask = t;
+		const idx = all.findIndex((item) => item.id === t.id);
+		if (idx >= 0) {
+			this.index = idx;
+		}
+		this.logScroll = 0;
+		this.logFollow = false;
+	}
+
+	closeDetail(): void {
+		this.view = "list";
+		this.expanded = false;
+		this.detailTask = undefined;
+		this.logScroll = 0;
+		this.logFollow = false;
+		this.reconcile();
+	}
+
+	isDetail(): boolean {
+		return this.view === "detail";
+	}
+
+	getDetailTask(): BgTask | undefined {
+		if (this.view === "detail" && this.detailTask) {
+			return this.detailTask;
+		}
+		const tasks = this.getTasks();
+		if (tasks.length === 0) return undefined;
+		const idx = Math.max(0, Math.min(tasks.length - 1, this.index));
+		return tasks[idx];
+	}
+
+	selected(): BgTask | undefined {
+		if (!this.active && !this.isExpanded()) return undefined;
+		const tasks = this.getTasks();
+		if (tasks.length === 0) return undefined;
+		const idx = Math.max(0, Math.min(tasks.length - 1, this.index));
+		return tasks[idx];
+	}
+
+	selectedIndex(): number {
+		return this.active || this.isExpanded() ? this.index : -1;
+	}
+
 	getMaxVisible(termHeight?: number): number {
-		if (!this.expanded) {
+		if (!this.isExpanded()) {
 			return MAX_DOCK_VISIBLE;
 		}
 		const h = termHeight ?? (typeof process !== "undefined" && process.stdout?.rows ? process.stdout.rows : 24);
@@ -100,25 +171,41 @@ export class DockController {
 			return false;
 		}
 		this.active = true;
-		if (this.view !== "detail") {
-			this.view = "list";
-			this.detailTask = undefined;
-			this.index = 0;
-			this.listOffset = 0;
-		}
 		return true;
 	}
 
+	exitDock(): void {
+		this.active = false;
+		if (this.view !== "detail") {
+			this.expanded = false;
+		}
+	}
+
+	inDock(): boolean {
+		return this.active;
+	}
+
 	move(delta: number, termHeight?: number): void {
-		const count = this.getTasks().length;
-		if (count === 0) { this.exitDock(); return; }
-		if (!this.active) return;
+		const tasks = this.getTasks();
+		const count = tasks.length;
+		if (count === 0) {
+			this.exitDock();
+			return;
+		}
+		const prevIndex = this.index;
 		const maxVisible = this.getMaxVisible(termHeight);
 		this.index = Math.max(0, Math.min(count - 1, this.index + delta));
+
 		if (this.index < this.listOffset) {
 			this.listOffset = this.index;
 		} else if (this.index >= this.listOffset + maxVisible) {
 			this.listOffset = this.index - maxVisible + 1;
+		}
+
+		if (this.index !== prevIndex) {
+			this.detailTask = tasks[this.index];
+			this.logScroll = 0;
+			this.logFollow = true;
 		}
 	}
 
@@ -128,12 +215,11 @@ export class DockController {
 		if (count <= maxVisible) return;
 		const maxOffset = Math.max(0, count - maxVisible);
 		this.listOffset = Math.max(0, Math.min(maxOffset, this.listOffset + delta));
-		if (this.active) {
-			if (this.index < this.listOffset) {
-				this.index = this.listOffset;
-			} else if (this.index >= this.listOffset + maxVisible) {
-				this.index = this.listOffset + maxVisible - 1;
-			}
+
+		if (this.index < this.listOffset) {
+			this.index = this.listOffset;
+		} else if (this.index >= this.listOffset + maxVisible) {
+			this.index = this.listOffset + maxVisible - 1;
 		}
 	}
 
@@ -144,73 +230,31 @@ export class DockController {
 		return Math.max(0, Math.min(maxOffset, this.listOffset));
 	}
 
-	selected(): BgTask | undefined {
-		if (!this.active) return undefined;
-		return this.getTasks()[this.index];
-	}
-
-	openDetail(task?: BgTask): void {
-		const t = task ?? this.selected();
-		if (!t) return;
-		this.active = true;
-		this.view = "detail";
-		this.detailTask = t;
-		this.detailScroll = 0;
-		this.detailFollow = false;
-	}
-
-	closeDetail(): void {
-		this.view = "list";
-		this.detailTask = undefined;
-		this.detailScroll = 0;
-		this.detailFollow = false;
-	}
-
-	isDetail(): boolean {
-		return this.view === "detail";
-	}
-
-	getDetailTask(): BgTask | undefined {
-		return this.detailTask;
-	}
-
 	scrollDetail(delta: number): void {
-		if (!this.isDetail()) return;
-		this.detailFollow = false;
-		this.detailScroll = Math.max(0, Math.min(this.detailMaxScroll, this.detailScroll + delta));
-	}
-
-	scrollDetailTop(): void {
-		if (!this.isDetail()) return;
-		this.detailFollow = false;
-		this.detailScroll = 0;
-	}
-
-	scrollDetailBottom(): void {
-		if (!this.isDetail()) return;
-		this.detailFollow = true;
-		this.detailScroll = this.detailMaxScroll;
-	}
-
-	setMaxScroll(max: number): void {
-		this.detailMaxScroll = max;
-	}
-
-	getDetailScroll(): { scroll: number; follow: boolean } {
-		return { scroll: this.detailScroll, follow: this.detailFollow };
-	}
-
-	exitDock(): void {
-		this.active = false;
-		if (this.expanded) {
-			this.expanded = false;
-			this.reconcile();
+		this.logFollow = false;
+		this.logScroll = Math.max(0, Math.min(this.logMaxScroll, this.logScroll + delta));
+		if (this.logScroll >= this.logMaxScroll) {
+			this.logFollow = true;
 		}
 	}
 
-	inDock(): boolean { return this.active; }
-	selectedIndex(): number { return this.active ? this.index : -1; }
-	getView(): "list" | "detail" { return this.view; }
+	scrollDetailTop(): void {
+		this.logFollow = false;
+		this.logScroll = 0;
+	}
+
+	scrollDetailBottom(): void {
+		this.logFollow = true;
+		this.logScroll = this.logMaxScroll;
+	}
+
+	setMaxScroll(max: number): void {
+		this.logMaxScroll = Math.max(0, max);
+	}
+
+	getDetailScroll(): { scroll: number; follow: boolean } {
+		return { scroll: this.logScroll, follow: this.logFollow };
+	}
 
 	reconcile(termHeight?: number): void {
 		if (this.view === "detail") {
@@ -222,7 +266,8 @@ export class DockController {
 		}
 		const count = this.getTasks().length;
 		if (count === 0) {
-			this.exitDock();
+			this.active = false;
+			this.expanded = false;
 			this.index = 0;
 			this.listOffset = 0;
 		} else {
@@ -277,12 +322,7 @@ export function installDock(
 		}
 	}
 
-	const tasks = (): BgTask[] => registry.list().filter((t: BgTask) => t.status === "running");
 	const unsubscribe = registry.onChange(() => {
-		// A task can finish or time out while the dock owns the keyboard. Rows
-		// disappear from the widget on their own, so the controller must be told
-		// too — otherwise `inDock()` stays true and DockEditor keeps swallowing
-		// keystrokes until the user presses Esc (PRD-003 §7.7).
 		const wasInDock = controller.inDock();
 		controller.reconcile();
 		if (wasInDock && !controller.inDock()) {
@@ -295,7 +335,7 @@ export function installDock(
 	function render(): void {
 		if (disposed) return;
 		const all = controller.getTasks();
-		if (all.length === 0 && !controller.isDetail() && !controller.isExpanded()) {
+		if (all.length === 0 && !controller.isExpanded()) {
 			stopTicker();
 			ctx.ui.setWidget(DOCK_WIDGET_KEY, undefined, { placement: "belowEditor" });
 			return;
@@ -312,59 +352,19 @@ export function installDock(
 			render(width: number): string[] {
 				if (disposed) return [];
 
-				if (controller.isDetail()) {
-					const task = controller.getDetailTask();
-					if (!task) return [];
-					if (cachedDetailTaskId !== task.id) {
-						void refreshDockTail(task);
-					}
-					const lines: string[] = detailLines(task, width, Date.now(), { theme });
-					lines.push(""); // blank line between "Output" and the content
+				const all = controller.getTasks();
+				if (all.length === 0) return [];
 
-					const outputLines = cachedOutputLines;
-					const height = 10;
-					const maxScroll = Math.max(0, outputLines.length - height);
-					controller.setMaxScroll(maxScroll);
-					const { scroll: curScroll, follow } = controller.getDetailScroll();
-					const scroll = follow ? maxScroll : Math.max(0, Math.min(maxScroll, curScroll));
-					const visible = outputLines.slice(scroll, scroll + height);
+				const now = Date.now();
+				const count = all.length;
+				const termHeight =
+					tui?.terminal?.rows ??
+					(typeof process !== "undefined" && process.stdout?.rows ? process.stdout.rows : 24);
 
-					if (visible.length === 0 || (visible.length === 1 && visible[0].trim() === "")) {
-						lines.push(theme.fg("dim", "(no output)"));
-					} else {
-						for (const l of visible) {
-							lines.push(theme.fg("toolOutput", truncateToWidth(l, width)));
-						}
-					}
-
-					lines.push("");
-					const statusLine = formatOutputStatusLine({
-						follow,
-						totalLines: outputLines.length,
-						scrollTop: scroll,
-						visibleLines: height,
-						bytesRead: cachedBytesRead,
-						totalBytes: cachedTotalBytes,
-						truncated: cachedTruncated,
-					});
-					lines.push(theme.fg("dim", statusLine));
-
-					const rule = (options.borderColor ?? ((t: string) => theme.fg("dim", t)))(RULE_CHAR.repeat(Math.max(1, width)));
-					lines.push(rule);
-					if (controller.inDock()) {
-						lines.push(theme.fg("dim", "↑ input · ↑/↓ scroll · pgup/pgdown · esc back · k kill"));
-					} else {
-						lines.push(theme.fg("dim", "↓ enter detail · esc back to tasks"));
-					}
-					return lines;
-				}
-
+				// ===================================================================
+				// Unified Master-Detail View (/tasks or detail)
+				// ===================================================================
 				if (controller.isExpanded()) {
-					const all = controller.getTasks();
-					if (all.length === 0) return [];
-					const now = Date.now();
-					const count = all.length;
-					const termHeight = tui?.terminal?.rows ?? (typeof process !== "undefined" && process.stdout?.rows ? process.stdout.rows : 24);
 					const maxVisible = controller.getMaxVisible(termHeight);
 					const visibleCount = Math.min(count, maxVisible);
 					const offset = controller.getListOffset(termHeight);
@@ -372,7 +372,11 @@ export function installDock(
 					const selectedIndex = controller.selectedIndex();
 
 					const lines: string[] = [];
+
+					// 1. Header rule: ── Background Tasks ──────────────────────────
 					lines.push(formatHeaderLine("Background Tasks", width, theme));
+
+					// 2. Subtitle: N tasks  current session branch
 					lines.push(
 						theme
 							? theme.fg("dim", `${count} task${count === 1 ? "" : "s"}  current session branch`)
@@ -380,6 +384,7 @@ export function installDock(
 					);
 					lines.push("");
 
+					// 3. Master List of Tasks with completion markers
 					for (let i = 0; i < visibleTasks.length; i++) {
 						const taskIndex = offset + i;
 						const task = visibleTasks[i];
@@ -387,6 +392,7 @@ export function installDock(
 						lines.push(formatCleanTaskRow(task, isSelected, width, now, theme));
 					}
 
+					// Pagination hint if tasks exceed visible window
 					if (count > visibleCount) {
 						lines.push(
 							theme
@@ -397,61 +403,126 @@ export function installDock(
 
 					lines.push("");
 
+					// Active selected task for details and output
 					const activeTask =
 						selectedIndex >= 0 && selectedIndex < all.length ? all[selectedIndex] : visibleTasks[0];
+
 					if (activeTask) {
-						lines.push(...formatCwdAndLog(activeTask, theme));
+						// Trigger log tail refresh if selected task changed
+						if (cachedDetailTaskId !== activeTask.id) {
+							void refreshDockTail(activeTask);
+						}
+
+						// 4. Task Details Section
+						lines.push(theme?.bold ? theme.bold("Task Details") : "Task Details");
+						lines.push(
+							...taskMetadataLines(activeTask, width, now, {
+								theme,
+								showMetadata: false,
+							}),
+						);
+
+						// 5. Divider Rule
+						const rule = (borderColorFn ?? ((t: string) => theme.fg("dim", t)))(
+							RULE_CHAR.repeat(Math.max(1, width)),
+						);
+						lines.push(rule);
+
+						// 6. Output Header
+						lines.push("Output");
+						lines.push("");
+
+						// 7. Output Tail
+						const outputLines =
+							cachedDetailTaskId === activeTask.id ? cachedOutputLines : [];
+						const maxOutputHeight = Math.max(4, Math.min(8, Math.floor(termHeight * 0.25)));
+
+						const totalLines = outputLines.length;
+						const maxScroll = Math.max(0, totalLines - maxOutputHeight);
+						controller.setMaxScroll(maxScroll);
+
+						const scrollInfo = controller.getDetailScroll();
+						let startLine = 0;
+						if (scrollInfo.follow || totalLines <= maxOutputHeight) {
+							startLine = Math.max(0, totalLines - maxOutputHeight);
+						} else {
+							startLine = Math.min(scrollInfo.scroll, maxScroll);
+						}
+
+						const slice = outputLines.slice(startLine, startLine + maxOutputHeight);
+						if (slice.length === 0) {
+							lines.push(theme.fg("dim", "(no output yet)"));
+						} else {
+							for (const line of slice) {
+								lines.push(truncateToWidth(line, width));
+							}
+						}
+
+						lines.push("");
+
+						// 8. Interactive Hint Line
+						const statusText = formatOutputStatusLine({
+							follow: scrollInfo.follow,
+							totalLines,
+							scrollTop: startLine,
+							visibleLines: maxOutputHeight,
+							bytesRead: cachedBytesRead,
+							totalBytes: cachedTotalBytes,
+							truncated: cachedTruncated,
+						});
+						lines.push(
+							theme.fg(
+								"dim",
+								`${statusText} · ↑/↓ select · PgUp/PgDn scroll log · k kill · esc close`,
+							),
+						);
 					}
 
 					return lines;
 				}
 
-				const all = controller.getTasks();
-				if (all.length === 0) return [];
-				const now = Date.now();
-				const count = all.length;
-				const termHeight = tui?.terminal?.rows ?? (typeof process !== "undefined" && process.stdout?.rows ? process.stdout.rows : 24);
-				const maxVisible = controller.getMaxVisible(termHeight);
-				const visibleCount = Math.min(count, maxVisible);
-				const offset = controller.getListOffset(termHeight);
-				const visibleTasks = all.slice(offset, offset + visibleCount);
-				const selectedIndex = controller.inDock() ? controller.selectedIndex() : -1;
-				const lines: string[] = [];
+				// ===================================================================
+				// Compact Dock View (collapsed mode for running tasks)
+				// ===================================================================
+				const runningTasks = all.filter((t) => t.status === "running");
+				if (runningTasks.length === 0) return [];
 
-				for (let i = 0; i < visibleTasks.length; i++) {
+				const maxVisible = MAX_DOCK_VISIBLE;
+				const visibleCount = Math.min(runningTasks.length, maxVisible);
+				const offset = controller.getListOffset(termHeight);
+				const visibleRunning = runningTasks.slice(offset, offset + visibleCount);
+				const selectedIndex = controller.selectedIndex();
+
+				const lines: string[] = [];
+				for (let i = 0; i < visibleRunning.length; i++) {
 					const taskIndex = offset + i;
-					const task = visibleTasks[i];
-					const lead = taskIndex === selectedIndex ? "> " : "  ";
-					const icon = taskStatusIcon(task, theme);
-					const clock = formatClock(task.startedAt);
-					const cmd = truncateToWidth(task.command, Math.max(10, width - 32));
-					const isErr =
-						task.status === "failed" ||
-						task.status === "killed" ||
-						(task.exitCode !== null && task.exitCode !== undefined && task.exitCode !== 0);
-					const statusColor = isErr ? "error" : "success";
-					const status = task.status === "running" ? "running"
-						: task.status === "failed" ? `failed (${task.exitCode ?? 1})`
-						: `killed${task.reason ? ` (${task.reason})` : ""}`;
-					const statusText = theme ? theme.fg(statusColor, status) : status;
-					const elapsed = task.status === "running"
-						? theme.fg("dim", ` \u00b7 ${formatDuration(now - task.startedAt)}`) : "";
-					lines.push(`${lead}${icon} [${clock}] ${cmd} ${statusText}${elapsed}`);
+					const task = visibleRunning[i];
+					const isSelected = controller.inDock() && taskIndex === selectedIndex;
+					lines.push(dockRow(task, isSelected, width, now, theme));
 				}
-				if (count > maxVisible) {
-					const hint = `  (${offset + 1}–${offset + visibleCount} of ${count} · scroll with mouse/arrows)`;
+
+				if (runningTasks.length > maxVisible) {
+					const hint = `  (${offset + 1}–${offset + visibleCount} of ${runningTasks.length} · scroll with mouse/arrows)`;
 					lines.push(theme.fg("dim", hint));
 				}
-				const rule = (options.borderColor ?? ((t: string) => theme.fg("dim", t)))(RULE_CHAR.repeat(Math.max(1, width)));
+
+				const rule = (borderColorFn ?? ((t: string) => theme.fg("dim", t)))(
+					RULE_CHAR.repeat(Math.max(1, width)),
+				);
 				lines.push(rule);
 				return lines;
 			},
+
 			handleMouse(event: TuiMouseEvent): { handled: boolean } | undefined {
 				if (event.type === "wheel") {
 					const delta = (event.wheelDelta ?? 0) !== 0 ? (event.wheelDelta! > 0 ? 1 : -1) : 0;
 					if (delta !== 0) {
-						if (controller.isDetail()) {
-							controller.scrollDetail(delta);
+						if (controller.isExpanded()) {
+							if ((event.y ?? 0) > 8) {
+								controller.scrollDetail(delta * 2);
+							} else {
+								controller.move(delta);
+							}
 						} else {
 							controller.scrollList(delta);
 						}
@@ -459,16 +530,18 @@ export function installDock(
 						return { handled: true };
 					}
 				}
-				if (event.type === "click" && !controller.isDetail()) {
+
+				if (event.type === "click") {
+					const all = controller.getTasks();
 					const offset = controller.getListOffset();
-					const clickedIdx = offset + event.y;
-					const all = tasks();
-					if (clickedIdx >= 0 && clickedIdx < all.length) {
-						controller.openDetail(all[clickedIdx]);
+					const clickedIndex = offset + (event.y ?? 0) - 3;
+					if (clickedIndex >= 0 && clickedIndex < all.length) {
+						controller.expandTasks(all[clickedIndex].id);
 						(capturedTui ?? options.getTui?.())?.requestRender();
 						return { handled: true };
 					}
 				}
+
 				return undefined;
 			},
 		};
@@ -478,10 +551,17 @@ export function installDock(
 	function startTicker(): void {
 		if (ticker !== undefined) return;
 		ticker = setInterval(() => {
-			if (tasks().length === 0 && !controller.isDetail()) { stopTicker(); render(); return; }
-			if (controller.isDetail()) {
-				const dt = controller.getDetailTask();
-				if (dt) void refreshDockTail(dt);
+			const all = controller.getTasks();
+			if (all.length === 0 && !controller.isExpanded()) {
+				stopTicker();
+				render();
+				return;
+			}
+			if (controller.isExpanded()) {
+				const active = controller.getDetailTask();
+				if (active && active.status === "running") {
+					void refreshDockTail(active);
+				}
 			}
 			(capturedTui ?? options.getTui?.())?.requestRender();
 		}, 1000);
@@ -489,7 +569,10 @@ export function installDock(
 	}
 
 	function stopTicker(): void {
-		if (ticker !== undefined) { clearInterval(ticker); ticker = undefined; }
+		if (ticker !== undefined) {
+			clearInterval(ticker);
+			ticker = undefined;
+		}
 	}
 
 	function dispose(): void {
@@ -506,6 +589,9 @@ export function installDock(
 	return {
 		dispose,
 		refresh: render,
-		setBorderColor(fn: (text: string) => string) { borderColorFn = fn; render(); },
+		setBorderColor(fn: (text: string) => string) {
+			borderColorFn = fn;
+			render();
+		},
 	};
 }

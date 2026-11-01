@@ -1,6 +1,6 @@
 /**
- * DockEditor (§7.7): `CustomEditor` subclass that adds the ↓-from-empty-input
- * fall-through into dock mode and owns the keyboard while the dock has focus.
+ * DockEditor: `CustomEditor` subclass that manages keyboard focus between
+ * the pi editor input and the background tasks dock / master-detail view.
  */
 import { CustomEditor } from "@earendil-works/pi-coding-agent";
 import type { CustomEditorOptions } from "@earendil-works/pi-coding-agent";
@@ -15,9 +15,9 @@ import { enableTerminalMouse, parseMouseInput } from "./ui/terminal-mouse.ts";
 
 export class DockEditor extends CustomEditor {
 	readonly dock: DockController;
-	/** Wired by index.ts to open the Task Details panel for a task. */
+	/** Wired by index.ts to open or focus a task. */
 	onOpenTask?: (task: BgTask) => void;
-	/** Optional: `k` inside dock mode. */
+	/** Wired by index.ts to kill a task (`k` key in dock mode). */
 	onKillTask?: (task: BgTask) => void;
 
 	constructor(
@@ -37,16 +37,15 @@ export class DockEditor extends CustomEditor {
 	}
 
 	/** Classify an arrow key across legacy CSI, SS3, and Kitty-protocol encodings. */
-		private static kittyArrow(data: string): "up" | "down" | "left" | "right" | undefined {
-		// ESC [ <mods> <letter>  (CSI / Kitty)  or  ESC O <letter>  (SS3)
+	private static kittyArrow(data: string): "up" | "down" | "left" | "right" | undefined {
 		const match = new RegExp("^\\u001b(?:O([ABCD])|\\[[0-9;:]*([ABCD]))$").exec(data);
 		if (!match) return undefined;
 		const letter = match[1] ?? match[2];
 		return letter === "A" ? "up" : letter === "B" ? "down" : letter === "C" ? "right" : "left";
 	}
 
-	private static readonly DOWN_SEQUENCES = ["[B", "OB"];
-	private static readonly UP_SEQUENCES = ["[A", "OA"];
+	private static readonly DOWN_SEQUENCES = ["\x1b[B", "\x1bOB"];
+	private static readonly UP_SEQUENCES = ["\x1b[A", "\x1bOA"];
 
 	private isDown(data: string): boolean {
 		return matchesKey(data, Key.down) || DockEditor.DOWN_SEQUENCES.includes(data) || DockEditor.kittyArrow(data) === "down";
@@ -72,7 +71,7 @@ export class DockEditor extends CustomEditor {
 		if (mouse.sawMouse) {
 			if (mouse.wheelDelta !== 0) {
 				if (this.dock.isDetail?.()) {
-					this.dock.scrollDetail?.(mouse.wheelDelta);
+					this.dock.scrollDetail?.(mouse.wheelDelta * 2);
 					this.tui.requestRender();
 					return;
 				}
@@ -84,10 +83,9 @@ export class DockEditor extends CustomEditor {
 		}
 
 		if (!this.dock.inDock()) {
-			// ↓ on an empty editor falls through to the dock when it has rows or detail is open.
+			// ↓ on an empty editor enters dock mode
 			if (this.isDown(data)) {
 				if (this.getText().trim() !== "") {
-					debugLog("dock-editor: ↓ ignored (editor not empty)");
 					super.handleInput(data);
 					return;
 				}
@@ -96,11 +94,11 @@ export class DockEditor extends CustomEditor {
 					this.tui.requestRender();
 					return;
 				}
-				debugLog("dock-editor: ↓ but enterDock returned false (no running rows or detail)");
 				super.handleInput(data);
 				return;
 			}
-			// When detail view or expanded /tasks view is showing below an empty editor, Esc closes it
+
+			// Esc on empty editor closes expanded /tasks view if showing
 			if (this.getText().trim() === "") {
 				const isEscape = matchesKey(data, Key.escape) || data === "\u001b" || /^\u001b\[1?27(;[0-9:]+)?u$/.test(data);
 				if (isEscape) {
@@ -116,30 +114,28 @@ export class DockEditor extends CustomEditor {
 					}
 				}
 			}
+
 			super.handleInput(data);
 			return;
 		}
+
 		debugLog("dock-editor: dock-mode key", JSON.stringify(data));
 
-		// Defensive: if the rows vanished (task finished/timed out on its own)
-		// and no reconcile ran, do not trap the keyboard. Exit dock mode and
-		// let the keystroke through to the real editor.
+		// If all tasks vanished, exit dock mode cleanly
 		if (!this.dock.isDetail?.() && !this.dock.selected()) {
-			debugLog("dock-editor: dock mode had no selectable row — auto-exiting");
 			this.dock.exitDock();
 			this.tui.requestRender();
 			if (data !== "\u001b") super.handleInput(data);
 			return;
 		}
 
-		// Dock mode owns the keyboard.
+		// Ctrl+c safety valve
 		if (data === "\x03") {
-			// ctrl+c is the app safety valve — always reaches pi.
 			super.handleInput(data);
 			return;
 		}
 
-		// Detail mode navigation (task details rendered below editor)
+		// Detail mode navigation
 		if (this.dock.isDetail?.()) {
 			const isEscape = matchesKey(data, Key.escape) || data === "\u001b" || /^\u001b\[1?27(;[0-9:]+)?u$/.test(data);
 			if (isEscape) {
@@ -195,29 +191,28 @@ export class DockEditor extends CustomEditor {
 
 		// List mode navigation
 		if (this.isUp(data)) {
-			// (a) Up arrow exits dock mode back to the input box when at top item
 			if (this.dock.selectedIndex && this.dock.selectedIndex() <= 0) {
 				debugLog("dock-editor: ↑ from top row — exiting dock mode to input box");
 				this.dock.exitDock();
 				this.tui.requestRender();
 				return;
 			}
-			this.dock.move(-1, this.tui.terminal?.rows);
+			this.dock.move?.(-1, this.tui.terminal?.rows);
 			this.tui.requestRender();
 			return;
 		}
+
 		if (this.isDown(data)) {
-			this.dock.move(1, this.tui.terminal?.rows);
+			this.dock.move?.(1, this.tui.terminal?.rows);
 			this.tui.requestRender();
 			return;
 		}
+
 		const isEnter = matchesKey(data, Key.enter) || data === "\r" || /^\u001b\[1?3(;[0-9:]+)?u$/.test(data);
 		if (isEnter) {
-			const task = this.dock.selected();
+			const task = this.dock.selected?.();
 			if (task) {
-				if (this.dock.openDetail) {
-					this.dock.openDetail(task);
-				}
+				this.dock.openDetail?.(task);
 				this.onOpenTask?.(task);
 			} else {
 				this.dock.exitDock();
@@ -225,23 +220,24 @@ export class DockEditor extends CustomEditor {
 			this.tui.requestRender();
 			return;
 		}
+
 		const isEscape = matchesKey(data, Key.escape) || data === "\u001b" || /^\u001b\[1?27(;[0-9:]+)?u$/.test(data);
 		if (isEscape) {
 			if (this.dock.isExpanded?.()) {
 				this.dock.collapseTasks?.();
-				this.tui.requestRender();
-				return;
 			}
 			this.dock.exitDock();
 			this.tui.requestRender();
 			return;
 		}
+
 		if (data === "k") {
-			const task = this.dock.selected();
+			const task = this.dock.selected?.();
 			if (task) this.onKillTask?.(task);
 			this.tui.requestRender();
 			return;
 		}
-		// Everything else is swallowed while the dock has focus.
+
+		// All other keystrokes swallowed while dock mode owns keyboard
 	}
 }

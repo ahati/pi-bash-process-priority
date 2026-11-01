@@ -86,7 +86,13 @@ try {
 	await terminal.press("enter");
 	await sleep(500);
 	const panelVisible = await waitUntil(
-		(screen) => screen.includes("Task Details") && screen.includes("Command:") && screen.includes("Output"),
+		(screen) =>
+			screen.includes("Background Tasks") &&
+			screen.includes("Task Details") &&
+			screen.includes("Command:") &&
+			screen.includes("Cwd:") &&
+			screen.includes("Log:") &&
+			screen.includes("Output"),
 		5_000,
 	);
 	record("D: Task Details panel visible", panelVisible.ok);
@@ -95,7 +101,7 @@ try {
 	await terminal.press("up");
 	await sleep(500);
 	const upToInputFromDetail = await waitUntil(
-		(screen) => screen.includes("enter detail") || screen.includes("esc back to tasks"),
+		(screen) => screen.includes("esc close") || screen.includes("select") || screen.includes("model"),
 		3_000,
 	);
 	record("D-up-detail: ↑ from details goes to input box", upToInputFromDetail.ok);
@@ -103,7 +109,7 @@ try {
 	// ─── ↓ from input back into details ─────────────────────────────────────
 	await terminal.press("down");
 	await sleep(500);
-	const downIntoDetail = await waitUntil((screen) => screen.includes("↑ input") || screen.includes("k kill"), 3_000);
+	const downIntoDetail = await waitUntil((screen) => screen.includes("k kill") || screen.includes("select"), 3_000);
 	record("D-down-detail: ↓ returns to detail mode", downIntoDetail.ok);
 
 	// ─── esc from details back to dock ───────────────────────────────────────

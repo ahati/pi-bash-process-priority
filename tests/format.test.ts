@@ -124,6 +124,7 @@ test("detailLines matches the §4.2 header block", () => {
 		"Status:  ● running",
 		"Type:    Agent",
 		"Started: 2026-10-31 10:56:52",
+		"Log:     /tmp/.pi/bg-tasks/task-2.log",
 		"",
 		"─".repeat(40),
 		"Output",

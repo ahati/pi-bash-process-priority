@@ -1,13 +1,12 @@
 /**
- * Pure formatting helpers for the background-task UI (PRD-003 §4, §7.8, §7.10).
+ * Pure formatting helpers for the background-task UI.
  *
  * No side effects, no TUI state: every function is a pure string transform.
- * Colors are deliberately *not* embedded here — statuses are exposed through
- * `statusColorToken()` so components can apply `theme.fg(...)` themselves.
+ * Colors are applied through theme tokens (e.g. mdLink for LHS labels,
+ * success/error for status indicators).
  */
 
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-
 import type { BgNotificationDetails, BgTask, BgTaskOrigin, BgTaskStatus } from "../types.ts";
 
 export const BULLET = "●";
@@ -16,27 +15,27 @@ export const RULE_CHAR = "─";
 export const SEGMENT_SEPARATOR = " · ";
 
 // ---------------------------------------------------------------------------
-// Time & durations (§4.1, §4.2, §7.8)
+// Time & durations
 // ---------------------------------------------------------------------------
 
 function pad2(n: number): string {
 	return String(n).padStart(2, "0");
 }
 
-/** Local wall clock "HH:MM:SS" for the dock (§4.1). */
+/** Local wall clock "HH:MM:SS" for dock rows and timestamps. */
 export function formatClock(epochMs: number): string {
 	const d = new Date(epochMs);
 	return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
 }
 
-/** Local timestamp "YYYY-MM-DD HH:MM:SS" for Task Details (§4.2). */
+/** Local timestamp "YYYY-MM-DD HH:MM:SS" for Task Details. */
 export function formatTimestamp(epochMs: number): string {
 	const d = new Date(epochMs);
 	return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${formatClock(epochMs)}`;
 }
 
 /**
- * Compact duration: "45s", "2m 01s", "1h 04m", "1d 2h" (§7.8).
+ * Compact duration: "45s", "2m 01s", "1h 04m", "1d 2h".
  * Seconds are floored; negative input clamps to zero.
  */
 export function formatDuration(ms: number): string {
@@ -65,9 +64,7 @@ export function taskAge(task: BgTask, nowMs = Date.now()): string {
 	return formatDuration((task.endedAt ?? nowMs) - task.startedAt);
 }
 
-/**
- * Dynamic output status line below the tail viewer (from pi-background-tasks).
- */
+/** Dynamic output status line below the tail viewer. */
 export function formatOutputStatusLine(options: {
 	follow: boolean;
 	totalLines: number;
@@ -89,13 +86,13 @@ export function formatOutputStatusLine(options: {
 }
 
 // ---------------------------------------------------------------------------
-// Status vocabulary & colors
+// Status vocabulary & icons
 // ---------------------------------------------------------------------------
 
 /**
- * Status prefix icon (§4.1):
+ * Status prefix icon:
  * - running: green dot ●
- * - completed: green tick ✓
+ * - completed (exit 0): green tick ✓
  * - failed/killed: red cross ✗
  */
 export function taskStatusIcon(
@@ -114,12 +111,10 @@ export function taskStatusIcon(
 	return theme ? theme.fg("error", icon) : icon;
 }
 
-/** "running" | "completed" | "failed" | "killed" (§4.4). */
 export function statusWord(status: BgTaskStatus): string {
 	return status;
 }
 
-/** Theme color token the components should apply to the status dot/word. */
 export function statusColorToken(status: BgTaskStatus): "accent" | "success" | "error" | "dim" {
 	switch (status) {
 		case "running":
@@ -133,26 +128,16 @@ export function statusColorToken(status: BgTaskStatus): "accent" | "success" | "
 	}
 }
 
-/**
- * Terminal outcome label used as a row/notification suffix:
- * "exit 0", "exit 1", "SIGKILL". Empty while running / unknown.
- */
 export function terminalStatusLabel(task: BgTask): string {
 	if (task.signal) return task.signal;
 	if (task.exitCode !== null && task.exitCode !== undefined) return `exit ${task.exitCode}`;
 	return "";
 }
 
-/** Human wording for the task origin (§7.10 expanded block). */
 export function humanizeOrigin(origin: BgTaskOrigin): string {
 	return origin === "foreground-adopted" ? "ctrl+b (foreground adopt)" : "bg_task";
 }
 
-// ---------------------------------------------------------------------------
-// Dock (§4.1, §7.8)
-// ---------------------------------------------------------------------------
-
-/** Collapse a command to one display line (dock rows are single-line). */
 export function singleLine(text: string): string {
 	return text.replace(/\s+/g, " ").trim();
 }
@@ -169,10 +154,11 @@ function terminalSuffix(task: BgTask): string {
 	return "";
 }
 
-/**
- * One dock row: `"  ⏳ [HH:MM:SS] cmd running"` or `"> ⏳ …"` when selected.
- * Prefixed with sand-clock ⏳, green tick ✔, or red cross ✗ based on task status.
- */
+// ---------------------------------------------------------------------------
+// Dock & List Rows
+// ---------------------------------------------------------------------------
+
+/** Compact dock row for running tasks in collapsed dock mode. */
 export function dockRow(
 	task: BgTask,
 	selected: boolean,
@@ -185,10 +171,10 @@ export function dockRow(
 	const prefix = `${lead}${icon} [${formatClock(task.startedAt)}] `;
 	const commandWidth = Math.max(1, width - 24);
 	const command = truncateToWidth(singleLine(task.command), commandWidth);
-	// Live elapsed time for running tasks (PRD-004 §4.1): the 1 s dock ticker
-	// supplies nowMs so the duration ticks up on screen.
 	const elapsed =
-		task.status === "running" && nowMs !== undefined ? ` · ${formatDuration(Math.max(0, nowMs - task.startedAt))}` : "";
+		task.status === "running" && nowMs !== undefined
+			? ` · ${formatDuration(Math.max(0, nowMs - task.startedAt))}`
+			: "";
 	const isErr =
 		task.status === "failed" ||
 		task.status === "killed" ||
@@ -200,21 +186,17 @@ export function dockRow(
 	return truncateToWidth(line, width);
 }
 
-/** Full-width "─" rules above and below the dock row block (§4.1). */
 export function dockFrame(lines: string[], width: number): string[] {
 	const rule = RULE_CHAR.repeat(Math.max(0, width));
 	return [rule, ...lines, rule];
 }
 
-/** Footer segment: "N task(s) · /tasks", omitted (empty) when nothing runs. */
 export function footerSegment(runningCount: number): string {
 	if (runningCount <= 0) return "";
 	return `${runningCount} task(s)${SEGMENT_SEPARATOR}/tasks`;
 }
 
-/**
- * Full-width header line: "── Background Tasks ──────────────────────────"
- */
+/** Full-width header line: "── Background Tasks ──────────────────────────" */
 export function formatHeaderLine(
 	title: string,
 	width: number,
@@ -235,7 +217,7 @@ export function formatHeaderLine(
 }
 
 /**
- * Format clean task row for /tasks view:
+ * Clean task row for the master task list:
  *   "  ✓ test-slow                                                               8s task-1"
  *   "> ✓ test-heartbeat                                                         12s task-2"
  */
@@ -268,7 +250,7 @@ export function formatCleanTaskRow(
 }
 
 /**
- * Format Cwd and Log lines for selected task:
+ * Format standalone Cwd and Log lines:
  *   "Cwd: /home/hati/workspace"
  *   "Log: /home/hati/workspace/.pi/bg-tasks/task-2.log"
  */
@@ -285,7 +267,7 @@ export function formatCwdAndLog(
 }
 
 // ---------------------------------------------------------------------------
-// Task Details (§4.2, §7.8)
+// Task Details Group (Command, Status, Type, Started, Cwd, Log)
 // ---------------------------------------------------------------------------
 
 export interface DetailLinesOptions {
@@ -297,18 +279,16 @@ export interface DetailLinesOptions {
 }
 
 /**
- * Task Details header block.
- * - LHS labels: "Command:", "Status:", "Type:", "Started:" in distinct colors.
- * - Status RHS: red or green based on status (error/failure/killed = red, running/completed = green).
+ * Format the metadata lines for a specific task.
+ * Includes Command, Status, Type, Started, Cwd, Log with uniform blue LHS labels (theme mdLink).
  */
-export function detailLines(
+export function taskMetadataLines(
 	task: BgTask,
 	width: number,
 	nowMs?: number,
 	options?: DetailLinesOptions,
 ): string[] {
 	const theme = options?.theme;
-	// All LHS labels in details use the same readable blue color token ("mdLink")
 	const colorLhs = (label: string) => (theme ? theme.fg("mdLink", label) : label);
 
 	const elapsed =
@@ -334,6 +314,8 @@ export function detailLines(
 	const statusLabel = colorLhs("Status:");
 	const typeLabel = colorLhs("Type:");
 	const startedLabel = colorLhs("Started:");
+	const cwdLabel = colorLhs("Cwd:");
+	const logLabel = colorLhs("Log:");
 
 	const typeVal =
 		task.callerType === "subagent"
@@ -341,13 +323,21 @@ export function detailLines(
 			: "Agent";
 
 	const lines = [
-		theme?.bold ? theme.bold("Task Details") : "Task Details",
-		"",
 		`${cmdLabel} ${singleLine(task.command)}`,
 		`${statusLabel}  ${statusRhs}`,
 		`${typeLabel}    ${typeVal}`,
 		`${startedLabel} ${formatTimestamp(task.startedAt)}`,
 	];
+
+	if (task.cwd !== undefined && task.cwd !== "") {
+		const cwdVal = theme ? theme.fg("dim", task.cwd) : task.cwd;
+		lines.push(`${cwdLabel}     ${cwdVal}`);
+	}
+	if (task.logPath) {
+		const logVal = theme ? theme.fg("dim", task.logPath) : task.logPath;
+		lines.push(`${logLabel}     ${logVal}`);
+	}
+
 	if (options?.showMetadata) {
 		const pidLabel = colorLhs("PID:");
 		const exitLabel = colorLhs("Exit:");
@@ -358,20 +348,35 @@ export function detailLines(
 		if (task.logPath) lines.push(`${outputLabel}  ${task.logPath}`);
 		if (task.bytesWritten) lines.push(`${sizeLabel}    ${formatSize(task.bytesWritten)}`);
 	}
-	const rule = RULE_CHAR.repeat(Math.max(0, width));
-	lines.push("", rule, "Output");
+
 	return lines.map((line) => truncateToWidth(line, width));
 }
 
+/**
+ * Task Details section header block + metadata + divider + Output header.
+ */
+export function detailLines(
+	task: BgTask,
+	width: number,
+	nowMs?: number,
+	options?: DetailLinesOptions,
+): string[] {
+	const theme = options?.theme;
+	const title = theme?.bold ? theme.bold("Task Details") : "Task Details";
+	const meta = taskMetadataLines(task, width, nowMs, options);
+	const rule = RULE_CHAR.repeat(Math.max(0, width));
+
+	return [title, "", ...meta, "", rule, "Output"].map((line) => truncateToWidth(line, width));
+}
+
 // ---------------------------------------------------------------------------
-// Notification renderer lines (Pi style)
+// Notification Renderers (Pi style)
 // ---------------------------------------------------------------------------
 
 function notificationCommand(task: BgTask): string {
 	return singleLine(task.command);
 }
 
-/** Formats the outcome metadata badge: "exit 0 · 35s" or "SIGKILL · 12s". */
 export function notificationMeta(details: BgNotificationDetails): string {
 	const { task } = details;
 	const parts: string[] = [];
@@ -395,14 +400,12 @@ export function notificationMeta(details: BgNotificationDetails): string {
 	return parts.join(" · ");
 }
 
-/** Status glyph: "✓" for completed, "✗" for failed, "⏾" for killed/running. */
 export function statusGlyph(status: BgTaskStatus): string {
 	if (status === "completed") return "✓";
 	if (status === "failed") return "✗";
 	return "⏾";
 }
 
-/** Collapsed Pi-style notification line 1: "✓ task-1 completed (exit 0 · 35s)". */
 export function notificationCollapsedLine(details: BgNotificationDetails, width: number): string {
 	const { task } = details;
 	const glyph = statusGlyph(task.status);
@@ -411,23 +414,14 @@ export function notificationCollapsedLine(details: BgNotificationDetails, width:
 	return truncateToWidth(`${glyph} ${task.id} ${statusWord(task.status)}${metaText}`, width);
 }
 
-/** Collapsed Pi-style notification line 2: "  ⎿ $ sleep 35". */
 export function notificationBranchLine(details: BgNotificationDetails, width: number): string {
 	return truncateToWidth(`  ⎿ $ ${notificationCommand(details.task)}`, width);
 }
 
-/** Collapsed Pi-style notification: returns [headerLine, branchLine]. */
 export function notificationCollapsedLines(details: BgNotificationDetails, width: number): string[] {
-	return [
-		notificationCollapsedLine(details, width),
-		notificationBranchLine(details, width),
-	];
+	return [notificationCollapsedLine(details, width), notificationBranchLine(details, width)];
 }
 
-/**
- * Expanded terminal notification block (Pi style): header, aligned metadata,
- * a rule, then the tail lines indented two spaces.
- */
 export function notificationExpandedLines(
 	details: BgNotificationDetails,
 	tailLines: string[],
@@ -469,17 +463,12 @@ export function notificationExpandedLines(
 	return lines.map((line) => truncateToWidth(line, width));
 }
 
-/** Still-running notice line 1: "⏾ task-2 still running after 30s". */
 export function stillRunningLine(details: BgNotificationDetails, width: number): string {
 	const { task } = details;
 	const elapsed = details.elapsedSeconds ?? 0;
 	return truncateToWidth(`⏾ ${task.id} still running after ${elapsed}s`, width);
 }
 
-/** Still-running notice: returns [headerLine, branchLine]. */
 export function stillRunningLines(details: BgNotificationDetails, width: number): string[] {
-	return [
-		stillRunningLine(details, width),
-		notificationBranchLine(details, width),
-	];
+	return [stillRunningLine(details, width), notificationBranchLine(details, width)];
 }
