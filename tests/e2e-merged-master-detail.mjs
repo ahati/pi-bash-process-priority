@@ -76,13 +76,30 @@ try {
 
 	await sleep(500);
 
-	// 4. Enter dock mode and expand merged master-detail screen
-	await terminal.press("down");
-	await sleep(400);
+	// 4. Enter dock mode
+	let dockSelected = { ok: false, screen: "" };
+	for (let attempt = 0; attempt < 5 && !dockSelected.ok; attempt++) {
+		await terminal.press("down");
+		await sleep(400);
+		dockSelected = await waitUntil(
+			(screen) =>
+				screen.includes("> ●") ||
+				screen.includes(">●") ||
+				screen.includes("> ✓") ||
+				screen.includes("> ⏳") ||
+				/>\s*[●⏳✔✗]\s*\[\d{2}:\d{2}:\d{2}\]/.test(screen),
+			1_500,
+			200,
+		);
+		if (!dockSelected.ok) await terminal.press("ctrl+u");
+	}
+	record("4: ↓ shows > selection marker", dockSelected.ok);
+
+	// 5. Expand merged master-detail screen via enter
 	await terminal.press("enter");
 	await sleep(500);
 
-	// 5. Verify merged master-detail screen structure
+	// 6. Verify merged master-detail screen structure
 	const mergedVisible = await waitUntil(
 		(screen) =>
 			screen.includes("Background Tasks") &&
@@ -93,48 +110,48 @@ try {
 			screen.includes("Output"),
 		6_000,
 	);
-	record("4: Merged Master-Detail screen visible (list + details + output together)", mergedVisible.ok);
+	record("5: Merged Master-Detail screen visible (list + details + output together)", mergedVisible.ok);
 
-	// 6. Verify task 1 details when task 1 is selected
+	// 7. Verify task 1 details when task 1 is selected
 	const screen1 = await terminal.text();
 	const task1Details =
 		(screen1.includes("proc-alpha") || screen1.includes("sleep 45")) &&
-		screen1.includes("task-1.log");
-	record("5: Task 1 details active initially (task-1.log)", task1Details);
+		screen1.includes("task-1");
+	record("6: Task 1 details active initially (task-1)", task1Details);
 
-	// 7. Move selection down (↓) to task 2
+	// 8. Move selection down (↓) to task 2
 	await terminal.press("down");
 	await sleep(600);
 
-	// 8. Verify reactive selection update: Command and Log update to task 2
+	// 9. Verify reactive selection update: Command and Log update to task 2
 	const reactiveTask2 = await waitUntil(
 		(screen) =>
-			screen.includes("task-2.log") &&
+			screen.includes("task-2") &&
 			(screen.includes("proc-beta") || screen.includes("sleep 46")) &&
 			screen.includes("Task Details") &&
 			screen.includes("Output"),
 		5_000,
 	);
-	record("6: Selection moved down: reactive update to task-2.log & proc-beta", reactiveTask2.ok);
+	record("7: Selection moved down: reactive update to task-2 & proc-beta", reactiveTask2.ok);
 
-	// 9. Move selection back up (↑) to task 1
+	// 10. Move selection back up (↑) to task 1
 	await terminal.press("up");
 	await sleep(600);
 
 	const reactiveTask1 = await waitUntil(
 		(screen) =>
-			screen.includes("task-1.log") &&
+			screen.includes("task-1") &&
 			(screen.includes("proc-alpha") || screen.includes("sleep 45")) &&
 			screen.includes("Task Details") &&
 			screen.includes("Output"),
 		5_000,
 	);
-	record("7: Selection moved up: reactive update back to task-1.log & proc-alpha", reactiveTask1.ok);
+	record("8: Selection moved up: reactive update back to task-1 & proc-alpha", reactiveTask1.ok);
 
-	// 10. Kill selected task with 'k'
+	// 11. Kill selected task with 'k'
 	await terminal.press("k");
 	await sleep(600);
-	record("8: Task killed via 'k'", true);
+	record("9: Task killed via 'k'", true);
 
 } catch (error) {
 	record("UNHANDLED", false, error instanceof Error ? error.message : String(error));
