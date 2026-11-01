@@ -94,7 +94,7 @@ export function formatOutputStatusLine(options: {
 
 /**
  * Status prefix icon (§4.1):
- * - running: sand-clock ⏳
+ * - running: green dot ●
  * - completed: green tick ✔
  * - failed/killed: red cross ✗
  */
@@ -103,8 +103,8 @@ export function taskStatusIcon(
 	theme?: { fg: (color: any, text: string) => string },
 ): string {
 	if (task.status === "running") {
-		const icon = "⏳";
-		return theme ? theme.fg("warning", icon) : icon;
+		const icon = "●";
+		return theme ? theme.fg("success", icon) : icon;
 	}
 	if (task.status === "completed" && (task.exitCode === null || task.exitCode === undefined || task.exitCode === 0)) {
 		const icon = "✔";
@@ -236,7 +236,8 @@ export function detailLines(
 	options?: DetailLinesOptions,
 ): string[] {
 	const theme = options?.theme;
-	const colorLhs = (color: string, label: string) => (theme ? theme.fg(color, label) : label);
+	// All LHS labels in details use the same readable blue color token ("mdLink")
+	const colorLhs = (label: string) => (theme ? theme.fg("mdLink", label) : label);
 
 	const elapsed =
 		task.status === "running" && nowMs !== undefined
@@ -257,10 +258,10 @@ export function detailLines(
 	const statusRhsContent = `${statusWordText}${statusSuffix}${elapsed}`;
 	const statusRhs = theme ? `${icon} ${theme.fg(statusColor, statusRhsContent)}` : `${icon} ${statusRhsContent}`;
 
-	const cmdLabel = colorLhs("accent", "Command:");
-	const statusLabel = colorLhs("warning", "Status:");
-	const typeLabel = colorLhs("toolTitle", "Type:");
-	const startedLabel = colorLhs("muted", "Started:");
+	const cmdLabel = colorLhs("Command:");
+	const statusLabel = colorLhs("Status:");
+	const typeLabel = colorLhs("Type:");
+	const startedLabel = colorLhs("Started:");
 
 	const typeVal =
 		task.callerType === "subagent"
@@ -276,10 +277,10 @@ export function detailLines(
 		`${startedLabel} ${formatTimestamp(task.startedAt)}`,
 	];
 	if (options?.showMetadata) {
-		const pidLabel = colorLhs("dim", "PID:");
-		const exitLabel = colorLhs("dim", "Exit:");
-		const outputLabel = colorLhs("dim", "Output:");
-		const sizeLabel = colorLhs("dim", "Size:");
+		const pidLabel = colorLhs("PID:");
+		const exitLabel = colorLhs("Exit:");
+		const outputLabel = colorLhs("Output:");
+		const sizeLabel = colorLhs("Size:");
 		if (task.pid) lines.push(`${pidLabel}     ${task.pid}`);
 		if (task.exitCode !== null && task.exitCode !== undefined) lines.push(`${exitLabel}    ${task.exitCode}`);
 		if (task.logPath) lines.push(`${outputLabel}  ${task.logPath}`);

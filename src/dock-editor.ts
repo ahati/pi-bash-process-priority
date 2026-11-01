@@ -76,7 +76,7 @@ export class DockEditor extends CustomEditor {
 					this.tui.requestRender();
 					return;
 				}
-				this.dock.scrollList?.(mouse.wheelDelta);
+				this.dock.scrollList?.(mouse.wheelDelta, this.tui.terminal?.rows);
 				this.tui.requestRender();
 				return;
 			}
@@ -100,13 +100,20 @@ export class DockEditor extends CustomEditor {
 				super.handleInput(data);
 				return;
 			}
-			// When detail view is showing below an empty editor, Esc closes detail view back to task list
-			if (this.dock.isDetail?.() && this.getText().trim() === "") {
+			// When detail view or expanded /tasks view is showing below an empty editor, Esc closes it
+			if (this.getText().trim() === "") {
 				const isEscape = matchesKey(data, Key.escape) || data === "\u001b" || /^\u001b\[1?27(;[0-9:]+)?u$/.test(data);
 				if (isEscape) {
-					this.dock.closeDetail?.();
-					this.tui.requestRender();
-					return;
+					if (this.dock.isDetail?.()) {
+						this.dock.closeDetail?.();
+						this.tui.requestRender();
+						return;
+					}
+					if (this.dock.isExpanded?.()) {
+						this.dock.collapseTasks?.();
+						this.tui.requestRender();
+						return;
+					}
 				}
 			}
 			super.handleInput(data);
@@ -137,7 +144,6 @@ export class DockEditor extends CustomEditor {
 			const isEscape = matchesKey(data, Key.escape) || data === "\u001b" || /^\u001b\[1?27(;[0-9:]+)?u$/.test(data);
 			if (isEscape) {
 				this.dock.closeDetail?.();
-				this.dock.exitDock?.();
 				this.tui.requestRender();
 				return;
 			}
@@ -196,12 +202,12 @@ export class DockEditor extends CustomEditor {
 				this.tui.requestRender();
 				return;
 			}
-			this.dock.move(-1);
+			this.dock.move(-1, this.tui.terminal?.rows);
 			this.tui.requestRender();
 			return;
 		}
 		if (this.isDown(data)) {
-			this.dock.move(1);
+			this.dock.move(1, this.tui.terminal?.rows);
 			this.tui.requestRender();
 			return;
 		}
@@ -221,6 +227,11 @@ export class DockEditor extends CustomEditor {
 		}
 		const isEscape = matchesKey(data, Key.escape) || data === "\u001b" || /^\u001b\[1?27(;[0-9:]+)?u$/.test(data);
 		if (isEscape) {
+			if (this.dock.isExpanded?.()) {
+				this.dock.collapseTasks?.();
+				this.tui.requestRender();
+				return;
+			}
 			this.dock.exitDock();
 			this.tui.requestRender();
 			return;

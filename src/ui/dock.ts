@@ -28,18 +28,59 @@ export interface DockOptions {
 }
 
 export class DockController {
-	private readonly getTasks: () => BgTask[];
+	private readonly getRunningTasks: () => BgTask[];
+	private readonly getAllTasks: () => BgTask[];
 	private index = 0;
 	private listOffset = 0;
 	private active = false;
+	private expanded = false;
 	private view: "list" | "detail" = "list";
 	private detailTask: BgTask | undefined;
 	private detailScroll = 0;
 	private detailFollow = true;
 	private detailMaxScroll = 0;
 
-	constructor(getTasks: () => BgTask[]) {
-		this.getTasks = getTasks;
+	constructor(getRunningTasks: () => BgTask[], getAllTasks?: () => BgTask[]) {
+		this.getRunningTasks = getRunningTasks;
+		this.getAllTasks = getAllTasks ?? getRunningTasks;
+	}
+
+	getTasks(): BgTask[] {
+		return this.expanded ? this.getAllTasks() : this.getRunningTasks();
+	}
+
+	isExpanded(): boolean {
+		return this.expanded;
+	}
+
+	expandTasks(): boolean {
+		const all = this.getAllTasks();
+		if (all.length === 0) {
+			return false;
+		}
+		this.expanded = true;
+		this.active = true;
+		this.view = "list";
+		this.detailTask = undefined;
+		this.index = 0;
+		this.listOffset = 0;
+		return true;
+	}
+
+	collapseTasks(): void {
+		this.expanded = false;
+		if (this.view === "detail") {
+			this.closeDetail();
+		}
+		this.reconcile();
+	}
+
+	getMaxVisible(termHeight?: number): number {
+		if (!this.expanded) {
+			return MAX_DOCK_VISIBLE;
+		}
+		const h = termHeight ?? (typeof process !== "undefined" && process.stdout?.rows ? process.stdout.rows : 24);
+		return Math.max(3, Math.floor(h * 0.4));
 	}
 
 	enterDock(): boolean {
@@ -59,35 +100,38 @@ export class DockController {
 		return true;
 	}
 
-	move(delta: number): void {
+	move(delta: number, termHeight?: number): void {
 		const count = this.getTasks().length;
 		if (count === 0) { this.exitDock(); return; }
 		if (!this.active) return;
+		const maxVisible = this.getMaxVisible(termHeight);
 		this.index = Math.max(0, Math.min(count - 1, this.index + delta));
 		if (this.index < this.listOffset) {
 			this.listOffset = this.index;
-		} else if (this.index >= this.listOffset + MAX_DOCK_VISIBLE) {
-			this.listOffset = this.index - MAX_DOCK_VISIBLE + 1;
+		} else if (this.index >= this.listOffset + maxVisible) {
+			this.listOffset = this.index - maxVisible + 1;
 		}
 	}
 
-	scrollList(delta: number): void {
+	scrollList(delta: number, termHeight?: number): void {
 		const count = this.getTasks().length;
-		if (count <= MAX_DOCK_VISIBLE) return;
-		const maxOffset = Math.max(0, count - MAX_DOCK_VISIBLE);
+		const maxVisible = this.getMaxVisible(termHeight);
+		if (count <= maxVisible) return;
+		const maxOffset = Math.max(0, count - maxVisible);
 		this.listOffset = Math.max(0, Math.min(maxOffset, this.listOffset + delta));
 		if (this.active) {
 			if (this.index < this.listOffset) {
 				this.index = this.listOffset;
-			} else if (this.index >= this.listOffset + MAX_DOCK_VISIBLE) {
-				this.index = this.listOffset + MAX_DOCK_VISIBLE - 1;
+			} else if (this.index >= this.listOffset + maxVisible) {
+				this.index = this.listOffset + maxVisible - 1;
 			}
 		}
 	}
 
-	getListOffset(): number {
+	getListOffset(termHeight?: number): number {
 		const count = this.getTasks().length;
-		const maxOffset = Math.max(0, count - MAX_DOCK_VISIBLE);
+		const maxVisible = this.getMaxVisible(termHeight);
+		const maxOffset = Math.max(0, count - maxVisible);
 		return Math.max(0, Math.min(maxOffset, this.listOffset));
 	}
 
@@ -149,16 +193,20 @@ export class DockController {
 
 	exitDock(): void {
 		this.active = false;
+		if (this.expanded) {
+			this.expanded = false;
+			this.reconcile();
+		}
 	}
 
 	inDock(): boolean { return this.active; }
 	selectedIndex(): number { return this.active ? this.index : -1; }
 	getView(): "list" | "detail" { return this.view; }
 
-	reconcile(): void {
+	reconcile(termHeight?: number): void {
 		if (this.view === "detail") {
 			if (this.detailTask) {
-				const updated = this.getTasks().find((t) => t.id === this.detailTask?.id);
+				const updated = this.getAllTasks().find((t) => t.id === this.detailTask?.id);
 				if (updated) this.detailTask = updated;
 			}
 			return;
@@ -170,7 +218,8 @@ export class DockController {
 			this.listOffset = 0;
 		} else {
 			if (this.index >= count) this.index = count - 1;
-			const maxOffset = Math.max(0, count - MAX_DOCK_VISIBLE);
+			const maxVisible = this.getMaxVisible(termHeight);
+			const maxOffset = Math.max(0, count - maxVisible);
 			if (this.listOffset > maxOffset) this.listOffset = maxOffset;
 		}
 	}
@@ -301,15 +350,21 @@ export function installDock(
 					return lines;
 				}
 
-				const all = tasks();
+				const all = controller.getTasks();
 				if (all.length === 0) return [];
 				const now = Date.now();
 				const count = all.length;
-				const visibleCount = Math.min(count, MAX_DOCK_VISIBLE);
-				const offset = controller.getListOffset();
+				const termHeight = tui?.terminal?.rows ?? (typeof process !== "undefined" && process.stdout?.rows ? process.stdout.rows : 24);
+				const maxVisible = controller.getMaxVisible(termHeight);
+				const visibleCount = Math.min(count, maxVisible);
+				const offset = controller.getListOffset(termHeight);
 				const visibleTasks = all.slice(offset, offset + visibleCount);
 				const selectedIndex = controller.inDock() ? controller.selectedIndex() : -1;
 				const lines: string[] = [];
+
+				if (controller.isExpanded()) {
+					lines.push(theme.fg("mdLink", theme.bold("Tasks (all)")));
+				}
 
 				for (let i = 0; i < visibleTasks.length; i++) {
 					const taskIndex = offset + i;
@@ -331,8 +386,11 @@ export function installDock(
 						? theme.fg("dim", ` \u00b7 ${formatDuration(now - task.startedAt)}`) : "";
 					lines.push(`${lead}${icon} [${clock}] ${cmd} ${statusText}${elapsed}`);
 				}
-				if (count > MAX_DOCK_VISIBLE) {
-					lines.push(theme.fg("dim", `  (${offset + 1}–${offset + visibleCount} of ${count} · scroll with mouse/arrows)`));
+				if (count > maxVisible || controller.isExpanded()) {
+					const hint = controller.isExpanded()
+						? `  (${offset + 1}–${offset + visibleCount} of ${count} · esc normal view · scroll with mouse/arrows)`
+						: `  (${offset + 1}–${offset + visibleCount} of ${count} · scroll with mouse/arrows)`;
+					lines.push(theme.fg("dim", hint));
 				}
 				const rule = (options.borderColor ?? ((t: string) => theme.fg("dim", t)))(RULE_CHAR.repeat(Math.max(1, width)));
 				lines.push(rule);

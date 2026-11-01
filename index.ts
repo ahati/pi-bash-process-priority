@@ -23,7 +23,7 @@
  *   PI_BASH_NICE_DISABLE   set to "1" to disable all nice wrapping (PRD-001)
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { KeyId } from "@earendil-works/pi-tui";
 import type { KeybindingsManager } from "@earendil-works/pi-coding-agent";
 import { buildNiceCommand, resolveConfig, type NiceConfig } from "./src/nice.ts";
@@ -379,11 +379,59 @@ export default function (pi: ExtensionAPI) {
 			},
 		});
 
+		// /tasks and /bg-tasks commands: expanded bottom view of all tasks up to 40% screen height
+		let dockControllerRef: DockController | undefined;
+		let dockRef: ReturnType<typeof installDock> | undefined;
+
+		const handleTasksCommand = async (args: string, commandCtx: ExtensionCommandContext) => {
+			if (!registry) {
+				if (commandCtx.hasUI) commandCtx.ui.notify("Background tasks are not active this session.", "info");
+				return;
+			}
+			if (commandCtx.mode !== "tui") {
+				const all = registry.list();
+				commandCtx.ui.notify(
+					all.length === 0 ? "No background tasks." : `${all.length} tasks: ${all.map((task) => `${task.id} (${task.status})`).join(", ")}`,
+					"info",
+				);
+				return;
+			}
+			if (dockControllerRef) {
+				if (typeof args === "string" && args.trim()) {
+					const specific = registry.get(args.trim());
+					if (specific) {
+						dockControllerRef.openDetail(specific);
+						dockRef?.refresh();
+						return;
+					}
+				}
+				const opened = dockControllerRef.expandTasks();
+				if (!opened && commandCtx.hasUI) {
+					commandCtx.ui.notify("No background tasks.", "info");
+				}
+				dockRef?.refresh();
+			}
+		};
+
+		pi.registerCommand("tasks", {
+			description: "Open the background task manager UI (expanded bottom view of all tasks)",
+			handler: handleTasksCommand,
+		});
+
+		pi.registerCommand("bg-tasks", {
+			description: "Open the background task manager UI (alias for /tasks)",
+			handler: handleTasksCommand,
+		});
+
 		// UI (TUI only, §7.7-§7.9).
 		if (ctx.mode === "tui" && ctx.hasUI) {
 			// PRD-004 v3.2: the normal pi footer is left untouched; the dock
 			// is the only injected chrome — a below-editor widget that renders above the footer.
-			const controller = new DockController(() => (registry ? registry.list().filter((task) => task.status === "running") : []));
+			const controller = new DockController(
+				() => (registry ? registry.list().filter((task) => task.status === "running") : []),
+				() => (registry ? registry.list() : []),
+			);
+			dockControllerRef = controller;
 			let dockEditorRef: DockEditor | undefined;
 			const dock = installDock(ctx, registry, controller, {
 				// The bottom rule reuses the live editor's border color so the
@@ -391,6 +439,7 @@ export default function (pi: ExtensionAPI) {
 				borderColor: (text) => dockEditorRef?.borderColor?.(text) ?? text,
 				getTui: () => dockEditorRef?.getTui?.(),
 			});
+			dockRef = dock;
 			const prevEditor = ctx.ui.getEditorComponent();
 			if (!prevEditor) {
 				ctx.ui.setEditorComponent((tui, theme, keybindings) => {

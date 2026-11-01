@@ -22,15 +22,15 @@ function makeTask(overrides: Partial<BgTask> = {}): BgTask {
 	};
 }
 
-test("taskStatusIcon: prefixes with sand-clock / green tick / red cross", () => {
+test("taskStatusIcon: prefixes with green dot / green tick / red cross", () => {
 	const theme = {
 		fg: (c: string, text: string) => `[${c}]${text}[/${c}]`,
 	};
 
-	// 1. Running -> sand-clock ⏳
+	// 1. Running -> green dot ●
 	const runningTask = makeTask({ status: "running" });
-	assert.equal(taskStatusIcon(runningTask), "⏳");
-	assert.equal(taskStatusIcon(runningTask, theme), "[warning]⏳[/warning]");
+	assert.equal(taskStatusIcon(runningTask), "●");
+	assert.equal(taskStatusIcon(runningTask, theme), "[success]●[/success]");
 
 	// 2. Completed (success) -> green tick ✔
 	const completedTask = makeTask({ status: "completed", exitCode: 0, endedAt: 1700000005000 });
@@ -51,7 +51,7 @@ test("taskStatusIcon: prefixes with sand-clock / green tick / red cross", () => 
 test("dockRow: includes status icon prefix", () => {
 	const running = makeTask({ status: "running" });
 	const rowRunning = dockRow(running, false, 80);
-	assert.ok(rowRunning.includes("⏳"));
+	assert.ok(rowRunning.includes("●"));
 
 	const completed = makeTask({ status: "completed", exitCode: 0 });
 	const rowCompleted = dockRow(completed, false, 80);
@@ -129,25 +129,27 @@ test("parseMouseInput: parses SGR and legacy mouse wheel events", () => {
 	assert.equal(parsedLegacyDown.wheelDelta, 1);
 });
 
-test("detailLines: LHS labels in different colours and Status RHS red/green based on status", () => {
+test("detailLines: all LHS labels in same colour (blue/mdLink) and Status RHS red/green based on status", () => {
 	const theme = {
 		fg: (c: string, text: string) => `[${c}]${text}[/${c}]`,
 		bold: (text: string) => `**${text}**`,
 	};
 
 	// 1. Running task:
-	// - Command LHS: [accent]Command:[/accent]
-	// - Status LHS: [warning]Status:[/warning]
-	// - Type LHS: [toolTitle]Type:[/toolTitle]
-	// - Started LHS: [muted]Started:[/muted]
+	// - All LHS labels in same colour (mdLink / blue)
 	// - Status RHS: green [success]running · ...[/success]
 	const running = makeTask({ status: "running" });
 	const runningLines = detailLines(running, 200, running.startedAt + 5000, { theme });
-	assert.ok(runningLines.some((l) => l.includes("[accent]Command:[/accent]")), "Command LHS is accent");
-	assert.ok(runningLines.some((l) => l.includes("[warning]Status:[/warning]")), "Status LHS is warning");
-	assert.ok(runningLines.some((l) => l.includes("[toolTitle]Type:[/toolTitle]")), "Type LHS is toolTitle");
-	assert.ok(runningLines.some((l) => l.includes("[muted]Started:[/muted]")), "Started LHS is muted");
-	assert.ok(runningLines.some((l) => l.includes("[success]running · 5s[/success]")), "Running status RHS is green (success)");
+	assert.ok(runningLines.some((l) => l.includes("[mdLink]Command:[/mdLink]")), "Command LHS is mdLink");
+	assert.ok(runningLines.some((l) => l.includes("[mdLink]Status:[/mdLink]")), "Status LHS is mdLink");
+	assert.ok(runningLines.some((l) => l.includes("[mdLink]Type:[/mdLink]")), "Type LHS is mdLink");
+	assert.ok(runningLines.some((l) => l.includes("[mdLink]Started:[/mdLink]")), "Started LHS is mdLink");
+	assert.ok(runningLines.some((l) => l.includes("[success]●[/success] [success]running · 5s[/success]")), "Running status RHS has green dot and green running text");
+
+	// Metadata LHS labels also in same colour (mdLink)
+	const metaLines = detailLines(running, 200, undefined, { showMetadata: true, theme });
+	assert.ok(metaLines.some((l) => l.includes("[mdLink]PID:[/mdLink]")), "PID LHS is mdLink");
+	assert.ok(metaLines.some((l) => l.includes("[mdLink]Output:[/mdLink]")), "Output LHS is mdLink");
 
 	// 2. Completed task:
 	// - Status RHS: green [success]completed · 10s[/success]
@@ -180,4 +182,36 @@ test("dockRow: RHS status is red/green based on status when theme is provided", 
 	const failed = makeTask({ status: "failed", exitCode: 1 });
 	const failedRow = dockRow(failed, false, 200, undefined, theme);
 	assert.ok(failedRow.includes("[error]failed (exit 1)[/error]"), "failed dock row status is red");
+});
+
+test("DockController: /tasks expanded mode brings all tasks and expands up to 40% vertical screen", () => {
+	const running = makeTask({ id: "task-1", status: "running" });
+	const completed = makeTask({ id: "task-2", status: "completed", exitCode: 0 });
+	const failed = makeTask({ id: "task-3", status: "failed", exitCode: 1 });
+	const allTasks = [running, completed, failed];
+
+	const controller = new DockController(
+		() => allTasks.filter((t) => t.status === "running"),
+		() => allTasks,
+	);
+
+	// 1. Normal mode: only running tasks, max visible = 3
+	assert.equal(controller.isExpanded(), false);
+	assert.equal(controller.getTasks().length, 1);
+	assert.equal(controller.getMaxVisible(30), 3);
+
+	// 2. /tasks expanded mode: all tasks (running, completed, failed)
+	assert.equal(controller.expandTasks(), true);
+	assert.equal(controller.isExpanded(), true);
+	assert.equal(controller.getTasks().length, 3);
+	// On a 30-row screen, 40% is Math.floor(30 * 0.4) = 12
+	assert.equal(controller.getMaxVisible(30), 12);
+	// On a 24-row screen, 40% is Math.floor(24 * 0.4) = 9
+	assert.equal(controller.getMaxVisible(24), 9);
+
+	// 3. ESC / collapseTasks returns to normal reduced-list view
+	controller.collapseTasks();
+	assert.equal(controller.isExpanded(), false);
+	assert.equal(controller.getTasks().length, 1);
+	assert.equal(controller.getMaxVisible(30), 3);
 });
