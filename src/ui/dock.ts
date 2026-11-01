@@ -8,7 +8,16 @@
  */
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import type { BgTask, TaskManagerApi } from "../types.ts";
-import { detailLines, formatClock, formatDuration, formatOutputStatusLine, taskStatusIcon } from "./format.ts";
+import {
+	detailLines,
+	formatClock,
+	formatDuration,
+	formatOutputStatusLine,
+	taskStatusIcon,
+	formatHeaderLine,
+	formatCleanTaskRow,
+	formatCwdAndLog,
+} from "./format.ts";
 import { boundedRead, DETAIL_TAIL_BYTES, toOutputLines } from "../log-reader.ts";
 import { debugLog } from "../debug.ts";
 import { truncateToWidth } from "@earendil-works/pi-tui";
@@ -285,8 +294,8 @@ export function installDock(
 
 	function render(): void {
 		if (disposed) return;
-		const all = tasks();
-		if (all.length === 0 && !controller.isDetail()) {
+		const all = controller.getTasks();
+		if (all.length === 0 && !controller.isDetail() && !controller.isExpanded()) {
 			stopTicker();
 			ctx.ui.setWidget(DOCK_WIDGET_KEY, undefined, { placement: "belowEditor" });
 			return;
@@ -350,6 +359,53 @@ export function installDock(
 					return lines;
 				}
 
+				if (controller.isExpanded()) {
+					const all = controller.getTasks();
+					if (all.length === 0) return [];
+					const now = Date.now();
+					const count = all.length;
+					const termHeight = tui?.terminal?.rows ?? (typeof process !== "undefined" && process.stdout?.rows ? process.stdout.rows : 24);
+					const maxVisible = controller.getMaxVisible(termHeight);
+					const visibleCount = Math.min(count, maxVisible);
+					const offset = controller.getListOffset(termHeight);
+					const visibleTasks = all.slice(offset, offset + visibleCount);
+					const selectedIndex = controller.selectedIndex();
+
+					const lines: string[] = [];
+					lines.push(formatHeaderLine("Background Tasks", width, theme));
+					lines.push(
+						theme
+							? theme.fg("dim", `${count} task${count === 1 ? "" : "s"}  current session branch`)
+							: `${count} task${count === 1 ? "" : "s"}  current session branch`,
+					);
+					lines.push("");
+
+					for (let i = 0; i < visibleTasks.length; i++) {
+						const taskIndex = offset + i;
+						const task = visibleTasks[i];
+						const isSelected = taskIndex === selectedIndex;
+						lines.push(formatCleanTaskRow(task, isSelected, width, now, theme));
+					}
+
+					if (count > visibleCount) {
+						lines.push(
+							theme
+								? theme.fg("dim", `  (${offset + 1}–${offset + visibleCount} of ${count} · scroll with mouse/arrows)`)
+								: `  (${offset + 1}–${offset + visibleCount} of ${count} · scroll with mouse/arrows)`,
+						);
+					}
+
+					lines.push("");
+
+					const activeTask =
+						selectedIndex >= 0 && selectedIndex < all.length ? all[selectedIndex] : visibleTasks[0];
+					if (activeTask) {
+						lines.push(...formatCwdAndLog(activeTask, theme));
+					}
+
+					return lines;
+				}
+
 				const all = controller.getTasks();
 				if (all.length === 0) return [];
 				const now = Date.now();
@@ -361,10 +417,6 @@ export function installDock(
 				const visibleTasks = all.slice(offset, offset + visibleCount);
 				const selectedIndex = controller.inDock() ? controller.selectedIndex() : -1;
 				const lines: string[] = [];
-
-				if (controller.isExpanded()) {
-					lines.push(theme.fg("mdLink", theme.bold("Tasks (all)")));
-				}
 
 				for (let i = 0; i < visibleTasks.length; i++) {
 					const taskIndex = offset + i;
@@ -386,10 +438,8 @@ export function installDock(
 						? theme.fg("dim", ` \u00b7 ${formatDuration(now - task.startedAt)}`) : "";
 					lines.push(`${lead}${icon} [${clock}] ${cmd} ${statusText}${elapsed}`);
 				}
-				if (count > maxVisible || controller.isExpanded()) {
-					const hint = controller.isExpanded()
-						? `  (${offset + 1}–${offset + visibleCount} of ${count} · esc normal view · scroll with mouse/arrows)`
-						: `  (${offset + 1}–${offset + visibleCount} of ${count} · scroll with mouse/arrows)`;
+				if (count > maxVisible) {
+					const hint = `  (${offset + 1}–${offset + visibleCount} of ${count} · scroll with mouse/arrows)`;
 					lines.push(theme.fg("dim", hint));
 				}
 				const rule = (options.borderColor ?? ((t: string) => theme.fg("dim", t)))(RULE_CHAR.repeat(Math.max(1, width)));

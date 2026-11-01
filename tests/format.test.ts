@@ -91,7 +91,7 @@ test("dockRow matches §4.1, selection and terminal suffixes", () => {
 		dockRow(task({ status: "killed", signal: "SIGKILL" }), false, 80),
 		"  ✗ [10:56:52] sleep 120 killed (SIGKILL)",
 	);
-	assert.equal(dockRow(task({ status: "completed", exitCode: 0 }), false, 80).startsWith("  ✔ [10:56:52]"), true);
+	assert.equal(dockRow(task({ status: "completed", exitCode: 0 }), false, 80).startsWith("  ✓ [10:56:52]"), true);
 	assert.equal(dockRow(task({ status: "completed", exitCode: 0 }), false, 80).endsWith("completed"), true);
 });
 

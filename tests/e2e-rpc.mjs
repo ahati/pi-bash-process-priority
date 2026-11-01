@@ -140,7 +140,7 @@ async function scenario1_startupAndSchema() {
 
 	const commands = await rpc({ type: "get_commands" });
 	const commandNames = JSON.stringify(commands.data ?? commands);
-	record("E2E-1b /tasks command registered", commandNames.includes("tasks"), "");
+	record("E2E-1b /tasks registered and /bg-tasks absent", commandNames.includes("tasks") && !commandNames.includes("bg-tasks"), "");
 
 	const noErrors = !events.some((e) => e.type === "extension_error");
 	record("E2E-1c no extension errors at startup", noErrors, events.filter((e) => e.type === "extension_error").map((e) => e.error).join("; "));

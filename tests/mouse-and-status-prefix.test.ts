@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { taskStatusIcon, dockRow, detailLines } from "../src/ui/format.ts";
+import {
+	taskStatusIcon,
+	dockRow,
+	detailLines,
+	formatHeaderLine,
+	formatCleanTaskRow,
+	formatCwdAndLog,
+} from "../src/ui/format.ts";
 import { DockController, MAX_DOCK_VISIBLE, installDock } from "../src/ui/dock.ts";
 import { parseMouseInput } from "../src/ui/terminal-mouse.ts";
 import type { BgTask } from "../src/types.ts";
@@ -32,10 +39,10 @@ test("taskStatusIcon: prefixes with green dot / green tick / red cross", () => {
 	assert.equal(taskStatusIcon(runningTask), "●");
 	assert.equal(taskStatusIcon(runningTask, theme), "[success]●[/success]");
 
-	// 2. Completed (success) -> green tick ✔
+	// 2. Completed (success) -> green tick ✓
 	const completedTask = makeTask({ status: "completed", exitCode: 0, endedAt: 1700000005000 });
-	assert.equal(taskStatusIcon(completedTask), "✔");
-	assert.equal(taskStatusIcon(completedTask, theme), "[success]✔[/success]");
+	assert.equal(taskStatusIcon(completedTask), "✓");
+	assert.equal(taskStatusIcon(completedTask, theme), "[success]✓[/success]");
 
 	// 3. Failed -> red cross ✗
 	const failedTask = makeTask({ status: "failed", exitCode: 1, endedAt: 1700000005000 });
@@ -55,7 +62,7 @@ test("dockRow: includes status icon prefix", () => {
 
 	const completed = makeTask({ status: "completed", exitCode: 0 });
 	const rowCompleted = dockRow(completed, false, 80);
-	assert.ok(rowCompleted.includes("✔"));
+	assert.ok(rowCompleted.includes("✓"));
 
 	const failed = makeTask({ status: "failed", exitCode: 2 });
 	const rowFailed = dockRow(failed, false, 80);
@@ -214,4 +221,38 @@ test("DockController: /tasks expanded mode brings all tasks and expands up to 40
 	assert.equal(controller.isExpanded(), false);
 	assert.equal(controller.getTasks().length, 1);
 	assert.equal(controller.getMaxVisible(30), 3);
+});
+
+test("formatHeaderLine: formats full-width header with title and rules", () => {
+	const header = formatHeaderLine("Background Tasks", 60);
+	assert.ok(header.startsWith("── Background Tasks ──"));
+	assert.equal(header.length, 60);
+});
+
+test("formatCleanTaskRow: formats row with status, command, duration, and id", () => {
+	const task = makeTask({
+		id: "task-2",
+		name: "test-heartbeat",
+		status: "completed",
+		startedAt: 1700000000000,
+		endedAt: 1700000012000,
+		exitCode: 0,
+	});
+	const row = formatCleanTaskRow(task, true, 80);
+	assert.ok(row.startsWith("> ✓ test-heartbeat"));
+	assert.ok(row.endsWith("12s task-2"));
+	assert.equal(row.length, 80);
+
+	const unselected = formatCleanTaskRow(task, false, 80);
+	assert.ok(unselected.startsWith("  ✓ test-heartbeat"));
+});
+
+test("formatCwdAndLog: renders Cwd and Log lines", () => {
+	const task = makeTask({
+		cwd: "/home/hati/workspace",
+		logPath: "/home/hati/workspace/.pi/bg-tasks/task-2.log",
+	});
+	const lines = formatCwdAndLog(task);
+	assert.equal(lines[0], "Cwd: /home/hati/workspace");
+	assert.equal(lines[1], "Log: /home/hati/workspace/.pi/bg-tasks/task-2.log");
 });

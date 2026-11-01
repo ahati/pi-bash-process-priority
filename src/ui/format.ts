@@ -6,7 +6,7 @@
  * `statusColorToken()` so components can apply `theme.fg(...)` themselves.
  */
 
-import { truncateToWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 import type { BgNotificationDetails, BgTask, BgTaskOrigin, BgTaskStatus } from "../types.ts";
 
@@ -95,7 +95,7 @@ export function formatOutputStatusLine(options: {
 /**
  * Status prefix icon (§4.1):
  * - running: green dot ●
- * - completed: green tick ✔
+ * - completed: green tick ✓
  * - failed/killed: red cross ✗
  */
 export function taskStatusIcon(
@@ -107,7 +107,7 @@ export function taskStatusIcon(
 		return theme ? theme.fg("success", icon) : icon;
 	}
 	if (task.status === "completed" && (task.exitCode === null || task.exitCode === undefined || task.exitCode === 0)) {
-		const icon = "✔";
+		const icon = "✓";
 		return theme ? theme.fg("success", icon) : icon;
 	}
 	const icon = "✗";
@@ -210,6 +210,78 @@ export function dockFrame(lines: string[], width: number): string[] {
 export function footerSegment(runningCount: number): string {
 	if (runningCount <= 0) return "";
 	return `${runningCount} task(s)${SEGMENT_SEPARATOR}/tasks`;
+}
+
+/**
+ * Full-width header line: "── Background Tasks ──────────────────────────"
+ */
+export function formatHeaderLine(
+	title: string,
+	width: number,
+	theme?: { fg: (color: any, text: string) => string },
+): string {
+	const prefix = "── ";
+	const suffix = " ";
+	const prefixWidth = visibleWidth(prefix);
+	const titleWidth = visibleWidth(title);
+	const suffixWidth = visibleWidth(suffix);
+	const ruleLen = Math.max(0, width - prefixWidth - titleWidth - suffixWidth);
+	const rule = RULE_CHAR.repeat(ruleLen);
+	if (!theme) return truncateToWidth(`${prefix}${title}${suffix}${rule}`, width);
+	return truncateToWidth(
+		`${theme.fg("dim", prefix)}${theme.fg("toolTitle", title)}${theme.fg("dim", suffix + rule)}`,
+		width,
+	);
+}
+
+/**
+ * Format clean task row for /tasks view:
+ *   "  ✓ test-slow                                                               8s task-1"
+ *   "> ✓ test-heartbeat                                                         12s task-2"
+ */
+export function formatCleanTaskRow(
+	task: BgTask,
+	selected: boolean,
+	width: number,
+	nowMs?: number,
+	theme?: { fg: (color: any, text: string) => string },
+): string {
+	const lead = selected ? "> " : "  ";
+	const icon = taskStatusIcon(task, theme);
+	const name = task.name || singleLine(task.command);
+	const age =
+		task.status === "running"
+			? formatDuration(Math.max(0, (nowMs ?? Date.now()) - task.startedAt))
+			: formatDuration(Math.max(0, (task.endedAt ?? task.startedAt) - task.startedAt));
+	const rightText = `${age} ${task.id}`;
+	const rightWidth = visibleWidth(rightText);
+
+	const leftPrefix = `${lead}${icon} `;
+	const leftPrefixWidth = visibleWidth(leftPrefix);
+	const maxNameWidth = Math.max(10, width - leftPrefixWidth - rightWidth - 4);
+	const truncatedName = truncateToWidth(name, maxNameWidth);
+	const currentLeftWidth = leftPrefixWidth + visibleWidth(truncatedName);
+	const padding = Math.max(2, width - currentLeftWidth - rightWidth);
+	const styledRight = theme ? theme.fg("dim", rightText) : rightText;
+
+	return truncateToWidth(`${leftPrefix}${truncatedName}${" ".repeat(padding)}${styledRight}`, width);
+}
+
+/**
+ * Format Cwd and Log lines for selected task:
+ *   "Cwd: /home/hati/workspace"
+ *   "Log: /home/hati/workspace/.pi/bg-tasks/task-2.log"
+ */
+export function formatCwdAndLog(
+	task: BgTask,
+	theme?: { fg: (color: any, text: string) => string },
+): string[] {
+	const cwdLabel = theme ? theme.fg("mdLink", "Cwd:") : "Cwd:";
+	const logLabel = theme ? theme.fg("mdLink", "Log:") : "Log:";
+	const cwd = task.cwd ?? "";
+	const cwdPath = theme ? theme.fg("dim", cwd) : cwd;
+	const logPath = theme ? theme.fg("dim", task.logPath) : task.logPath;
+	return [`${cwdLabel} ${cwdPath}`, `${logLabel} ${logPath}`];
 }
 
 // ---------------------------------------------------------------------------

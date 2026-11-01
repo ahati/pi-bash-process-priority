@@ -414,12 +414,7 @@ export default function (pi: ExtensionAPI) {
 		};
 
 		pi.registerCommand("tasks", {
-			description: "Open the background task manager UI (expanded bottom view of all tasks)",
-			handler: handleTasksCommand,
-		});
-
-		pi.registerCommand("bg-tasks", {
-			description: "Open the background task manager UI (alias for /tasks)",
+			description: "Open the background task manager UI",
 			handler: handleTasksCommand,
 		});
 
