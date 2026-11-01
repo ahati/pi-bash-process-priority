@@ -1074,7 +1074,7 @@ export function createBackgroundTaskTool(
 
 	return {
 		name: toolName,
-		label: toolName,
+		label: "BackgroundTask",
 		promptSnippet: "Run long-running background tasks (dev servers, watchers, builds)",
 		description: `Run a shell command as a background task at low CPU/IO priority.
 

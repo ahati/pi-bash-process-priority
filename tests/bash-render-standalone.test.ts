@@ -67,7 +67,7 @@ test("sanitizeAnsiForThemedOutput: removes problematic ANSI background escapes",
 
 // ─── Dedicated Tool Renderers ────────────────────────────────────────────────
 
-test("renderBackgroundTaskCall: renders background task with moon badge and taskName", () => {
+test("renderBackgroundTaskCall: renders background task with BackgroundTask badge and taskName", () => {
 	const theme = createPassThroughTheme();
 	const compNamed = renderBackgroundTaskCall(
 		{ command: "npm run build:watch", taskName: "compiler" },
@@ -75,7 +75,7 @@ test("renderBackgroundTaskCall: renders background task with moon badge and task
 		{ cwd: "/workspace" },
 	);
 	const textNamed = renderedSingleLine(compNamed);
-	assert.ok(textNamed.includes("⏾ background task"));
+	assert.ok(textNamed.includes("BackgroundTask"));
 	assert.ok(textNamed.includes("compiler"));
 	assert.ok(textNamed.includes("$ npm run build:watch"));
 
@@ -85,7 +85,7 @@ test("renderBackgroundTaskCall: renders background task with moon badge and task
 		{ cwd: "/workspace" },
 	);
 	const textAnon = renderedSingleLine(compAnon);
-	assert.ok(textAnon.includes("⏾ background task"));
+	assert.ok(textAnon.includes("BackgroundTask"));
 	assert.ok(textAnon.includes("$ python server.py"));
 });
 
@@ -111,7 +111,7 @@ test("renderBackgroundTaskResult: renders confirmation card with task ID and log
 		theme,
 	);
 	const text = renderedSingleLine(comp);
-	assert.ok(text.includes("⏾ Background task started"));
+	assert.ok(text.includes("BackgroundTask started"));
 	assert.ok(text.includes("task-3"));
 	assert.ok(text.includes("test-runner"));
 	assert.ok(text.includes("↳ Log: /tmp/task-3.log"));

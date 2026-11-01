@@ -185,7 +185,7 @@ export function renderBackgroundTaskResult(
 			? details.logPath
 			: (rawOutput.match(/Output:\s*(\S+)/i)?.[1] || "");
 
-	const header = `${theme.fg("toolTitle", theme.bold("⏾ Background task started"))} ${theme.fg("muted", "·")} ${theme.fg("accent", taskId)}${taskName ? ` ${theme.fg("muted", `(${taskName})`)}` : ""}`;
+	const header = `${theme.fg("toolTitle", theme.bold("BackgroundTask started"))} ${theme.fg("muted", "·")} ${theme.fg("accent", taskId)}${taskName ? ` ${theme.fg("muted", `(${taskName})`)}` : ""}`;
 	const logLine = logPath
 		? `\n${theme.fg("muted", "↳ Log: ")}${theme.fg("toolOutput", sanitizeAnsiForThemedOutput(logPath))}`
 		: "";
