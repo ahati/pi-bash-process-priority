@@ -688,6 +688,11 @@ export function handleDockInput(
 	const fleetCoordinator = (globalThis as any)[SHARED_FLEET_COORDINATOR_KEY];
 
 	if (!controller.inDock()) {
+		// If Subagents Fleet is currently active, yield all keys so fleet can navigate
+		if (fleetCoordinator?.isActive?.()) {
+			return undefined;
+		}
+
 		// ↓ on an empty editor enters dock mode
 		if (isDownKey(data)) {
 			if (editorText.trim() !== "") {
