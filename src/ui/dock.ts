@@ -13,7 +13,7 @@
 
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI, TuiMouseEvent } from "@earendil-works/pi-tui";
-import { truncateToWidth } from "@earendil-works/pi-tui";
+import { isKeyRelease, Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 import type { BgTask, TaskManagerApi } from "../types.ts";
 import {
@@ -26,7 +26,7 @@ import {
 } from "./format.ts";
 import { boundedRead, DETAIL_TAIL_BYTES, toOutputLines } from "../log-reader.ts";
 import { debugLog } from "../debug.ts";
-import { disableTerminalMouse, enableTerminalMouse, type WritableTerminalHost } from "./terminal-mouse.ts";
+import { disableTerminalMouse, enableTerminalMouse, parseMouseInput, type WritableTerminalHost } from "./terminal-mouse.ts";
 
 export const DOCK_WIDGET_KEY = "bg-tasks";
 export const MAX_DOCK_VISIBLE = 3;
@@ -163,14 +163,24 @@ export class DockController {
 		return Math.max(3, Math.floor(h * 0.4));
 	}
 
-	enterDock(): boolean {
-		if (this.getTasks().length === 0 && !this.detailTask) {
+	enterDock(fromBottom = false): boolean {
+		const tasks = this.getTasks();
+		if (tasks.length === 0 && !this.detailTask) {
 			this.active = false;
 			this.index = 0;
 			this.listOffset = 0;
 			return false;
 		}
 		this.active = true;
+		if (fromBottom && tasks.length > 0) {
+			this.index = tasks.length - 1;
+			const maxVisible = this.getMaxVisible();
+			if (this.index >= maxVisible) {
+				this.listOffset = this.index - maxVisible + 1;
+			} else {
+				this.listOffset = 0;
+			}
+		}
 		return true;
 	}
 
@@ -291,7 +301,7 @@ export function installDock(
 	registry: TaskManagerApi,
 	controller: DockController,
 	options: DockOptions = {},
-): { dispose(): void; refresh(): void; setBorderColor(fn: (text: string) => string): void } {
+): { dispose(): void; refresh(): void; setBorderColor(fn: (text: string) => string): void; getTui?: () => any } {
 	let ticker: ReturnType<typeof setInterval> | undefined;
 	let borderColorFn: ((text: string) => string) | undefined = options.borderColor;
 	let disposed = false;
@@ -494,6 +504,7 @@ export function installDock(
 				const selectedIndex = controller.selectedIndex();
 
 				const lines: string[] = [];
+
 				for (let i = 0; i < visibleRunning.length; i++) {
 					const taskIndex = offset + i;
 					const task = visibleRunning[i];
@@ -502,14 +513,19 @@ export function installDock(
 				}
 
 				if (runningTasks.length > maxVisible) {
-					const hint = `  (${offset + 1}–${offset + visibleCount} of ${runningTasks.length} · scroll with mouse/arrows)`;
-					lines.push(theme.fg("dim", hint));
+					const scrollHint = `  (${offset + 1}–${offset + visibleCount} of ${runningTasks.length} · scroll with mouse/arrows)`;
+					lines.push(theme.fg("dim", scrollHint));
 				}
 
-				const rule = (borderColorFn ?? ((t: string) => theme.fg("dim", t)))(
-					RULE_CHAR.repeat(Math.max(1, width)),
-				);
-				lines.push(rule);
+				const SHARED_FLEET_COORDINATOR_KEY = Symbol.for("pi-subagents:fleet-coordinator");
+				const fleetCoordinator = (globalThis as any)[SHARED_FLEET_COORDINATOR_KEY];
+				const hasFleet = !!fleetCoordinator?.hasRows?.();
+				if (!hasFleet) {
+					const rule = (borderColorFn ?? ((t: string) => theme.fg("dim", t)))(
+						RULE_CHAR.repeat(Math.max(1, width)),
+					);
+					lines.push(rule);
+				}
 				return lines;
 			},
 
@@ -534,7 +550,8 @@ export function installDock(
 				if (event.type === "click") {
 					const all = controller.getTasks();
 					const offset = controller.getListOffset();
-					const clickedIndex = offset + (event.y ?? 0) - 3;
+					const headerOffset = controller.isExpanded() ? 3 : 0;
+					const clickedIndex = offset + (event.y ?? 0) - headerOffset;
 					if (clickedIndex >= 0 && clickedIndex < all.length) {
 						controller.expandTasks(all[clickedIndex].id);
 						(capturedTui ?? options.getTui?.())?.requestRender();
@@ -589,9 +606,259 @@ export function installDock(
 	return {
 		dispose,
 		refresh: render,
+		getTui: () => capturedTui,
 		setBorderColor(fn: (text: string) => string) {
 			borderColorFn = fn;
 			render();
 		},
 	};
+}
+
+function kittyArrow(data: string): "up" | "down" | "left" | "right" | undefined {
+	const match = new RegExp("^\\u001b(?:O([ABCD])|\\[[0-9;:]*([ABCD]))$").exec(data);
+	if (!match) return undefined;
+	const letter = match[1] ?? match[2];
+	return letter === "A" ? "up" : letter === "B" ? "down" : letter === "C" ? "right" : "left";
+}
+
+const DOWN_SEQUENCES = ["\x1b[B", "\x1bOB"];
+const UP_SEQUENCES = ["\x1b[A", "\x1bOA"];
+const LEFT_SEQUENCES = ["\x1b[D", "\x1bOD"];
+
+function isDownKey(data: string): boolean {
+	return matchesKey(data, Key.down) || DOWN_SEQUENCES.includes(data) || kittyArrow(data) === "down";
+}
+function isUpKey(data: string): boolean {
+	return matchesKey(data, Key.up) || UP_SEQUENCES.includes(data) || kittyArrow(data) === "up";
+}
+function isLeftKey(data: string): boolean {
+	return matchesKey(data, Key.left) || LEFT_SEQUENCES.includes(data) || kittyArrow(data) === "left";
+}
+function isPageUpKey(data: string): boolean {
+	return matchesKey(data, Key.pageUp) || /^\u001b\[5(;[0-9:]+)?~$/.test(data);
+}
+function isPageDownKey(data: string): boolean {
+	return matchesKey(data, Key.pageDown) || /^\u001b\[6(;[0-9:]+)?~$/.test(data);
+}
+function isHomeKey(data: string): boolean {
+	return matchesKey(data, Key.home) || /^\u001b\[(H|1~|1;[0-9:]+H)$/.test(data);
+}
+function isEndKey(data: string): boolean {
+	return matchesKey(data, Key.end) || /^\u001b\[(F|4~|1;[0-9:]+F)$/.test(data);
+}
+
+export interface DockInputContext {
+	getEditorText?: () => string;
+	onOpenTask?: (task: BgTask) => void;
+	onKillTask?: (task: BgTask) => void;
+}
+
+export function handleDockInput(
+	data: string,
+	ctx: { ui?: { getEditorText?: () => string } } | DockInputContext,
+	controller: DockController,
+	registry?: TaskManagerApi,
+	getTui?: () => TUI | undefined,
+	callbacks?: { onOpenTask?: (task: BgTask) => void; onKillTask?: (task: BgTask) => void },
+): { consume?: boolean; data?: string } | undefined {
+	if (isKeyRelease(data)) return undefined;
+
+	const mouse = parseMouseInput(data);
+	if (mouse.sawMouse) {
+		if (mouse.wheelDelta !== 0) {
+			const tui = getTui?.();
+			if (controller.isDetail?.()) {
+				controller.scrollDetail?.(mouse.wheelDelta * 2);
+				tui?.requestRender();
+				return { consume: true };
+			}
+			if (controller.inDock() || controller.isExpanded()) {
+				controller.scrollList?.(mouse.wheelDelta, tui?.terminal?.rows);
+				tui?.requestRender();
+				return { consume: true };
+			}
+		}
+		return undefined;
+	}
+
+	const getTextFn = (ctx as any).getEditorText ?? (ctx as any).ui?.getEditorText;
+	const editorText = typeof getTextFn === "function" ? getTextFn() : "";
+	const tui = getTui?.();
+	const SHARED_FLEET_COORDINATOR_KEY = Symbol.for("pi-subagents:fleet-coordinator");
+	const fleetCoordinator = (globalThis as any)[SHARED_FLEET_COORDINATOR_KEY];
+
+	if (!controller.inDock()) {
+		// ↓ on an empty editor enters dock mode
+		if (isDownKey(data)) {
+			if (editorText.trim() !== "") {
+				return undefined;
+			}
+			if (controller.getTasks().length > 0 || controller.isDetail?.()) {
+				if (controller.enterDock(false)) {
+					debugLog("dock-input: ↓ entered dock mode");
+					tui?.requestRender();
+					fleetCoordinator?.update?.();
+					return { consume: true };
+				}
+			}
+			return undefined;
+		}
+
+		// Esc on empty editor closes expanded / detail view if showing
+		if (editorText.trim() === "") {
+			const isEscape = matchesKey(data, Key.escape) || data === "\u001b" || /^\u001b\[1?27(;[0-9:]+)?u$/.test(data);
+			if (isEscape) {
+				if (controller.isDetail?.()) {
+					controller.closeDetail?.();
+					tui?.requestRender();
+					fleetCoordinator?.update?.();
+					return { consume: true };
+				}
+				if (controller.isExpanded?.()) {
+					controller.collapseTasks?.();
+					tui?.requestRender();
+					fleetCoordinator?.update?.();
+					return { consume: true };
+				}
+			}
+		}
+
+		return undefined;
+	}
+
+	debugLog("dock-input: dock-mode key", JSON.stringify(data));
+
+	// If all tasks vanished, exit dock mode cleanly
+	if (!controller.isDetail?.() && !controller.selected()) {
+		controller.exitDock();
+		tui?.requestRender();
+		fleetCoordinator?.update?.();
+		return undefined;
+	}
+
+	// Ctrl+c safety valve
+	if (data === "\x03") {
+		controller.exitDock();
+		tui?.requestRender();
+		fleetCoordinator?.update?.();
+		return undefined;
+	}
+
+	// Escape closes expanded / detail view and exits dock mode
+	const isEscape = matchesKey(data, Key.escape) || data === "\u001b" || /^\u001b\[1?27(;[0-9:]+)?u$/.test(data);
+	if (isEscape) {
+		if (controller.isExpanded?.()) {
+			controller.collapseTasks?.();
+		}
+		if (controller.isDetail?.()) {
+			controller.closeDetail?.();
+		}
+		controller.exitDock();
+		tui?.requestRender();
+		fleetCoordinator?.update?.();
+		return { consume: true };
+	}
+
+	// Tab switches focus between Tasks dock and Subagents fleet if fleet is present
+	const isTab = matchesKey(data, Key.tab) || data === "\t";
+	if (isTab && fleetCoordinator?.hasRows?.()) {
+		debugLog("dock-input: Tab switching from dock to fleet list");
+		controller.exitDock();
+		fleetCoordinator.activate?.(true);
+		tui?.requestRender();
+		return { consume: true };
+	}
+
+	// ← switches to fleet list when not in detail screen
+	if (!controller.isDetail?.() && isLeftKey(data)) {
+		if (fleetCoordinator?.hasRows?.()) {
+			debugLog("dock-input: ← switching from dock to fleet list");
+			controller.exitDock();
+			fleetCoordinator.activate?.(true);
+			tui?.requestRender();
+			return { consume: true };
+		}
+	}
+
+	// Output log scrolling via PgUp / PgDn / Home / End
+	if (isPageUpKey(data)) {
+		controller.scrollDetail?.(-10);
+		tui?.requestRender();
+		return { consume: true };
+	}
+	if (isPageDownKey(data)) {
+		controller.scrollDetail?.(10);
+		tui?.requestRender();
+		return { consume: true };
+	}
+	if (isHomeKey(data)) {
+		controller.scrollDetailTop?.();
+		tui?.requestRender();
+		return { consume: true };
+	}
+	if (isEndKey(data)) {
+		controller.scrollDetailBottom?.();
+		tui?.requestRender();
+		return { consume: true };
+	}
+
+	// ↑ navigation: moves selection up in task list, or exits to input if at top row
+	if (isUpKey(data)) {
+		if (controller.selectedIndex && controller.selectedIndex() <= 0) {
+			debugLog("dock-input: ↑ from top row — exiting dock mode to input box");
+			controller.exitDock();
+			tui?.requestRender();
+			return { consume: true };
+		}
+		controller.move?.(-1, tui?.terminal?.rows);
+		tui?.requestRender();
+		return { consume: true };
+	}
+
+	// ↓ navigation: moves selection down in task list, or transitions to fleet list if at bottom task
+	if (isDownKey(data)) {
+		const tasks = controller.getTasks?.() ?? [];
+		const currentIndex = controller.selectedIndex?.() ?? -1;
+		if (!controller.isDetail?.() && currentIndex >= tasks.length - 1 && tasks.length > 0 && fleetCoordinator?.hasRows?.()) {
+			debugLog("dock-input: ↓ past bottom task — transitioning to fleet list");
+			controller.exitDock();
+			fleetCoordinator.activate?.(true);
+			tui?.requestRender();
+			return { consume: true };
+		}
+		controller.move?.(1, tui?.terminal?.rows);
+		tui?.requestRender();
+		return { consume: true };
+	}
+
+	// Enter opens or refreshes detail for selected task
+	const isEnter = matchesKey(data, Key.enter) || data === "\r" || /^\u001b\[1?3(;[0-9:]+)?u$/.test(data);
+	if (isEnter) {
+		const task = controller.selected?.() ?? controller.getDetailTask?.();
+		if (task) {
+			controller.openDetail?.(task);
+			callbacks?.onOpenTask?.(task);
+		} else {
+			controller.exitDock();
+		}
+		tui?.requestRender();
+		return { consume: true };
+	}
+
+	// 'k' terminates selected task
+	if (data === "k") {
+		const task = controller.selected?.() ?? controller.getDetailTask?.();
+		if (task) {
+			if (callbacks?.onKillTask) {
+				callbacks.onKillTask(task);
+			} else if (registry) {
+				void registry.kill(task.id, "dock key kill");
+			}
+		}
+		tui?.requestRender();
+		return { consume: true };
+	}
+
+	// All other keystrokes swallowed while dock mode owns keyboard
+	return { consume: true };
 }

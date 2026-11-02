@@ -39,7 +39,7 @@ import {
 	requestBackground,
 	resetBashOverrideState,
 } from "./src/bash-override.ts";
-import { DockController, installDock } from "./src/ui/dock.ts";
+import { DockController, handleDockInput, installDock } from "./src/ui/dock.ts";
 import { DockEditor } from "./src/dock-editor.ts";
 import { formatDuration } from "./src/ui/format.ts";
 import { renderBgNotification } from "./src/ui/notification.ts";
@@ -87,6 +87,7 @@ function notificationXml(task: BgTask): string {
 }
 
 export const SHARED_TASK_MANAGER_KEY = Symbol.for("pi-bash:shared-task-manager");
+export const SHARED_DOCK_COORDINATOR_KEY = Symbol.for("pi-bash:dock-coordinator");
 
 interface SharedRegistryEntry {
 	registry: TaskManagerApi;
@@ -410,39 +411,51 @@ export default function (pi: ExtensionAPI) {
 				() => (registry ? registry.list() : []),
 			);
 			dockControllerRef = controller;
-			let dockEditorRef: DockEditor | undefined;
-			const dock = installDock(ctx, registry, controller, {
-				// The bottom rule reuses the live editor's border color so the
-				// dock reads as part of the editor frame.
-				borderColor: (text) => dockEditorRef?.borderColor?.(text) ?? text,
-				getTui: () => dockEditorRef?.getTui?.(),
-			});
+			const dock = installDock(ctx, registry, controller, {});
 			dockRef = dock;
-			const prevEditor = ctx.ui.getEditorComponent();
-			if (!prevEditor) {
-				ctx.ui.setEditorComponent((tui, theme, keybindings) => {
-					// embedWorkingStatus keeps pi's "⎇ Working" indicator inside the
-					// editor's top border (native behavior); without it pi renders it
-					// as a separate line above the input.
-					const editor = new DockEditor(tui, theme, keybindings, controller, { embedWorkingStatus: true });
-					dockEditorRef = editor;
-					editor.onOpenTask = (_task: BgTask) => {
-						// Detail view opens in-place below the editor without duplicate dividers
-					};
-					editor.onKillTask = (task: BgTask) => {
-						void registry?.kill(task.id, "dock key kill");
-					};
-					return editor;
-				});
-				editorInstalled = true;
-			} else if (ctx.hasUI) {
-				debugLog("editor install skipped: another extension owns the editor component");
-				ctx.ui.notify("pi-bash-process-priority: another extension owns the editor — dock selection disabled", "info");
-			}
+
+			(globalThis as any)[SHARED_DOCK_COORDINATOR_KEY] = {
+				inDock: () => controller.inDock(),
+				isDetail: () => controller.isDetail(),
+				isExpanded: () => controller.isExpanded(),
+				hasTasks: () => controller.getTasks().length > 0,
+				taskCount: () => controller.getTasks().length,
+				enterDock: (fromBottom = false) => {
+					const ok = controller.enterDock(fromBottom);
+					if (ok) {
+						(dock.getTui?.() ?? (ctx as any).ui)?.requestRender();
+						const fleet = (globalThis as any)[Symbol.for("pi-subagents:fleet-coordinator")];
+						fleet?.update?.();
+					}
+					return ok;
+				},
+				exitDock: () => {
+					controller.exitDock();
+					(dock.getTui?.() ?? (ctx as any).ui)?.requestRender();
+					const fleet = (globalThis as any)[Symbol.for("pi-subagents:fleet-coordinator")];
+					fleet?.update?.();
+				},
+			};
+
+			const inputUnsub = ctx.ui.onTerminalInput((data) => {
+				return handleDockInput(
+					data,
+					ctx,
+					controller,
+					registry,
+					() => dock.getTui?.(),
+					{
+						onKillTask: (task: BgTask) => {
+							void registry?.kill(task.id, "dock key kill");
+						},
+					},
+				);
+			});
+
 			disposeUI = () => {
+				inputUnsub();
+				delete (globalThis as any)[SHARED_DOCK_COORDINATOR_KEY];
 				dock.dispose();
-				if (editorInstalled) ctx.ui.setEditorComponent(undefined);
-				editorInstalled = false;
 			};
 		}
 	});
@@ -453,6 +466,7 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 		delete (globalThis as any)[SHARED_TASK_MANAGER_KEY];
+		delete (globalThis as any)[SHARED_DOCK_COORDINATOR_KEY];
 		disposeUI?.();
 		disposeUI = undefined;
 		try {

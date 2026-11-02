@@ -201,19 +201,31 @@ export function formatHeaderLine(
 	title: string,
 	width: number,
 	theme?: { fg: (color: any, text: string) => string },
+	hint?: string,
+	borderColorFn?: (text: string) => string,
 ): string {
 	const prefix = "── ";
 	const suffix = " ";
 	const prefixWidth = visibleWidth(prefix);
 	const titleWidth = visibleWidth(title);
 	const suffixWidth = visibleWidth(suffix);
+
+	if (hint && width > 40) {
+		const hintText = ` ${hint} `;
+		const hintWidth = visibleWidth(hintText);
+		const midRuleLen = Math.max(1, width - prefixWidth - titleWidth - suffixWidth - hintWidth);
+		const midRule = RULE_CHAR.repeat(midRuleLen);
+		const dimFn = borderColorFn ?? ((t: string) => (theme ? theme.fg("dim", t) : t));
+		const titleStr = theme ? theme.fg("toolTitle", title) : title;
+		const hintStr = theme ? theme.fg("dim", hintText) : hintText;
+		return truncateToWidth(`${dimFn(prefix)}${titleStr}${dimFn(suffix + midRule)}${hintStr}`, width);
+	}
+
 	const ruleLen = Math.max(0, width - prefixWidth - titleWidth - suffixWidth);
 	const rule = RULE_CHAR.repeat(ruleLen);
-	if (!theme) return truncateToWidth(`${prefix}${title}${suffix}${rule}`, width);
-	return truncateToWidth(
-		`${theme.fg("dim", prefix)}${theme.fg("toolTitle", title)}${theme.fg("dim", suffix + rule)}`,
-		width,
-	);
+	const dimFn = borderColorFn ?? ((t: string) => (theme ? theme.fg("dim", t) : t));
+	const titleStr = theme ? theme.fg("toolTitle", title) : title;
+	return truncateToWidth(`${dimFn(prefix)}${titleStr}${dimFn(suffix + rule)}`, width);
 }
 
 /**

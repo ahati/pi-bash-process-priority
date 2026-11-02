@@ -218,3 +218,93 @@ test("detail mode navigation: enter opens detail, up/down moves task selection, 
 	assert.equal(isDetail, false);
 	assert.ok(dock.recorded.includes("closeDetail"));
 });
+
+test("fleet coordinator integration: Tab, down past bottom, and left switch to fleet", () => {
+	const SHARED_FLEET_COORDINATOR_KEY = Symbol.for("pi-subagents:fleet-coordinator");
+	let fleetActivated: boolean | undefined;
+	(globalThis as any)[SHARED_FLEET_COORDINATOR_KEY] = {
+		hasRows: () => true,
+		activate: (fromTop: boolean) => {
+			fleetActivated = fromTop;
+		},
+	};
+
+	try {
+		const dock = makeDock(2);
+		const tasks = [
+			{ id: "task-1", command: "sleep 1" },
+			{ id: "task-2", command: "sleep 2" },
+		];
+		let selectedIdx = 0;
+		Object.assign(dock, {
+			getTasks: () => tasks,
+			selectedIndex: () => selectedIdx,
+		});
+		const editor = makeEditor(dock);
+
+		// Tab switches from dock to fleet
+		editor.handleInput("\t");
+		assert.equal(fleetActivated, true);
+		assert.ok(dock.recorded.includes("exit"));
+
+		// Reset
+		fleetActivated = undefined;
+		dock.recorded.length = 0;
+
+		// Left arrow switches from dock to fleet
+		editor.handleInput("\x1b[D"); // left
+		assert.equal(fleetActivated, true);
+		assert.ok(dock.recorded.includes("exit"));
+
+		// Reset
+		fleetActivated = undefined;
+		dock.recorded.length = 0;
+
+		// Down arrow at bottom task (index 1 of 2 tasks) transitions to fleet
+		selectedIdx = 1;
+		editor.handleInput("\x1b[B"); // down
+		assert.equal(fleetActivated, true);
+		assert.ok(dock.recorded.includes("exit"));
+	} finally {
+		delete (globalThis as any)[SHARED_FLEET_COORDINATOR_KEY];
+	}
+});
+
+test("handleDockInput: down on empty editor enters dock mode; non-empty does not", async () => {
+	const { handleDockInput } = await import("../src/ui/dock.ts");
+	let inDock = false;
+	const controller = {
+		inDock: () => inDock,
+		enterDock: () => {
+			inDock = true;
+			return true;
+		},
+		exitDock: () => {
+			inDock = false;
+		},
+		getTasks: () => [{ id: "task-1", command: "sleep 1" }],
+		isDetail: () => false,
+		selected: () => ({ id: "task-1", command: "sleep 1" }),
+	};
+
+	let editorText = "";
+	const ctx = {
+		ui: {
+			getEditorText: () => editorText,
+		},
+	};
+
+	// At empty editor, down enters dock mode
+	const resEmpty = handleDockInput("\x1b[B", ctx as any, controller as any);
+	assert.deepEqual(resEmpty, { consume: true });
+	assert.equal(inDock, true);
+
+	// Reset
+	inDock = false;
+	editorText = "hello world";
+
+	// At non-empty editor, down does not enter dock mode
+	const resNonEmpty = handleDockInput("\x1b[B", ctx as any, controller as any);
+	assert.equal(resNonEmpty, undefined);
+	assert.equal(inDock, false);
+});
