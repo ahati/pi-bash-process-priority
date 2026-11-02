@@ -72,7 +72,7 @@ Constraints (verified, pi 1.4.0): RPC `bash` never passes through the registered
 }
 ```
 
-**Renderer contract (pi-ui-enhancement ≥ 2026.10.24-r5):** `intent`/`tool` render as the call header (`🔧 <tool> · <intent>`), `background`/`taskName` render a `⏾ background · <taskName>` badge, `cwd` renders a `cwd: <path>` line in the expanded (`ctrl+o`) view, and `taskAction` calls render a `bash tasks · <action> [taskId]` header. These args are display metadata: they never alter execution. Without pi-ui-enhancement the builtin fallback rendering is used (args ignored).
+**Renderer contract (pi-ui-enhancement ≥ 2026.10.245):** `intent`/`tool` render as the call header (`🔧 <tool> · <intent>`), `background`/`taskName` render a `⏾ background · <taskName>` badge, `cwd` renders a `cwd: <path>` line in the expanded (`ctrl+o`) view, and `taskAction` calls render a `bash tasks · <action> [taskId]` header. These args are display metadata: they never alter execution. Without pi-ui-enhancement the builtin fallback rendering is used (args ignored).
 
 - **Foreground** (`background` unset/false): unchanged pipeline — fg nice at spawn, streaming, abort kill-tree, timeout clamped to `fgTimeoutMax`, truncation (PRD-003 §7.1 guarantees).
 - **Background** (`background: true`): registry spawn at bg priority; `timeout` clamped to `bgTimeoutMax` and enforced by the registry (kill with `reason: timeout (<n>s)`); response is the standard task notice:
