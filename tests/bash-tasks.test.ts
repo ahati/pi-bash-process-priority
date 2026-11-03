@@ -73,17 +73,6 @@ test("runTaskAction: unknown task and missing parameters are errors", async () =
 	}
 });
 
-test("runTaskAction: adopt without a foreground command is an error", async () => {
-	const reg = createTaskManager({ logDir: "/tmp/bg-tests-adopt", killGraceMs: 100, logBytes: 4096, maxFinished: 5 });
-	try {
-		const outcome = await runTaskAction(reg, { taskAction: "adopt" });
-		assert.equal(outcome.isError, true);
-		assert.match(outcome.text, /No foreground command/);
-	} finally {
-		await reg.disposeAll();
-	}
-});
-
 test("runTaskAction: kill terminates a running task", async () => {
 	const reg = createTaskManager({ logDir: "/tmp/bg-tests-kill", killGraceMs: 100, logBytes: 4096, maxFinished: 5 });
 	try {
@@ -126,7 +115,6 @@ test("createManageBackgroundTaskTool renderCall: does not mutate lines across mu
 	try {
 		const tool = createManageBackgroundTaskTool({
 			registry: reg,
-			fgNice: 10,
 		}) as unknown as {
 			renderCall: (
 				args: unknown,
@@ -152,7 +140,6 @@ test("createBackgroundTaskTool: launches background task directly", async () => 
 	try {
 		const bgTool = createBackgroundTaskTool("/tmp", {
 			registry: reg,
-			fgNice: 10,
 		});
 		const result = await (bgTool.execute as any)("call-bg-1", {
 			command: "sleep 2",
@@ -176,7 +163,6 @@ test("createManageBackgroundTaskTool: handles list, status, and kill directly", 
 		await reg.run("sleep 5", "/tmp", { name: "target-proc" });
 		const manageTool = createManageBackgroundTaskTool({
 			registry: reg,
-			fgNice: 10,
 		});
 
 		const listRes = await (manageTool.execute as any)("call-m-1", { action: "list" });
@@ -197,54 +183,12 @@ test("createManageBackgroundTaskTool: handles list, status, and kill directly", 
 	}
 });
 
-test("createForegroundBashTool: executes successfully when optional inputs are null, '', 'null', 'NULL' (codemode test case)", async () => {
-	const { createForegroundBashTool } = await import("../src/bash-override.ts");
-	const reg = createTaskManager({ logDir: "/tmp/bg-tests-codemode", killGraceMs: 100, logBytes: 4096, maxFinished: 5 });
-	try {
-		const tool = createForegroundBashTool(process.cwd(), {
-			registry: reg,
-			fgNice: 10,
-		});
-
-		// 1. Exact user codemode test case:
-		const res1 = (await (tool.execute as any)("call-cm-1", {
-			command: "echo out; echo err >&2; exit 7",
-			timeout: null,
-			cwd: null,
-		})) as any;
-		assert.equal(res1.structuredContent?.exit_code, 7);
-		assert.equal(res1.structuredContent?.output, "out\nerr\n");
-		assert.match(res1.content[0].text, /out/);
-		assert.match(res1.content[0].text, /err/);
-		assert.match(res1.content[0].text, /Command exited with code 7/);
-
-		// 2. Case with "NULL" and "null":
-		const res2 = (await (tool.execute as any)("call-cm-2", {
-			command: "echo out; echo err >&2; exit 7",
-			timeout: "NULL",
-			cwd: "null",
-		})) as any;
-		assert.equal(res2.structuredContent?.exit_code, 7);
-		assert.equal(res2.structuredContent?.output, "out\nerr\n");
-
-		// 3. Case with "":
-		const res3 = (await (tool.execute as any)("call-cm-3", {
-			command: "echo ok",
-			timeout: "",
-			cwd: "",
-		})) as any;
-		assert.match(res3.content[0].text, /ok/);
-	} finally {
-		await reg.disposeAll();
-	}
-});
-
 test("createBackgroundTaskTool and createManageBackgroundTaskTool: support null, '', 'null', 'NULL'", async () => {
 	const { createBackgroundTaskTool, createManageBackgroundTaskTool } = await import("../src/bash-override.ts");
 	const reg = createTaskManager({ logDir: "/tmp/bg-tests-nil-opts", killGraceMs: 100, logBytes: 4096, maxFinished: 5 });
 	try {
-		const bgTool = createBackgroundTaskTool(process.cwd(), { registry: reg, fgNice: 10 });
-		const manageTool = createManageBackgroundTaskTool({ registry: reg, fgNice: 10 });
+		const bgTool = createBackgroundTaskTool(process.cwd(), { registry: reg });
+		const manageTool = createManageBackgroundTaskTool({ registry: reg });
 
 		// Background task with nulls and NULLs
 		for (const nilVal of [null, "", "null", "NULL"]) {

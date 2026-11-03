@@ -1,6 +1,5 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -327,43 +326,6 @@ test("notificationTimeoutSeconds arms a one-shot still-running notice", async (t
 	assert.equal(h.still.length, 1, "one-shot, not re-armed");
 	await h.manager.kill(task.id, "cleanup");
 	assert.equal(h.still.length, 1, "cleared on finalize");
-});
-
-test("adopt: no signalling, preOutput + subsequent output logged, completes", async (t) => {
-	const h = await harness();
-	t.after(() => cleanup(h));
-
-	const command = `printf 'before\\n'; sleep 0.35; printf 'after\\n'`;
-	const child = spawn("bash", ["-c", command], {
-		detached: true,
-		stdio: ["pipe", "pipe", "pipe"],
-	});
-	await new Promise((resolve) => child.once("spawn", resolve));
-	const pgid = child.pid!;
-	let pre = "";
-	child.stdout!.on("data", (chunk: Buffer) => {
-		pre += chunk.toString("utf8");
-	});
-	await new Promise((resolve) => setTimeout(resolve, 80));
-
-	const task = h.manager.adopt({
-		child,
-		pgid,
-		command,
-		cwd: h.dir,
-		startedAt: Date.now() - 80,
-		preOutput: Buffer.from(pre),
-	});
-	assert.equal(task.origin, "foreground-adopted");
-	assert.equal(task.status, "running");
-	assert.equal(groupAlive(pgid), true, "adoption never signals the child");
-
-	const done = await h.waitTerminal(task.id);
-	assert.equal(done.status, "completed");
-	const log = await readFile(done.logPath, "utf8");
-	assert.ok(log.startsWith(`$ ${command}\n`));
-	assert.ok(log.includes("before"));
-	assert.ok(log.includes("after"));
 });
 
 test("disposeAll kills everything and is idempotent", async (t) => {

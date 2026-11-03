@@ -10,7 +10,6 @@ import {
 	formatClock,
 	formatDuration,
 	formatTimestamp,
-	humanizeOrigin,
 	notificationCollapsedLine,
 	notificationExpandedLines,
 	statusColorToken,
@@ -192,9 +191,7 @@ test("notificationExpandedLines matches Pi style expanded block", () => {
 	for (const line of lines) assert.ok(visibleWidth(line) <= 60);
 });
 
-test("humanizeOrigin and stillRunningLine", () => {
-	assert.equal(humanizeOrigin("bg_task"), "bg_task");
-	assert.equal(humanizeOrigin("foreground-adopted"), "ctrl+b (foreground adopt)");
+test("stillRunningLine", () => {
 	assert.equal(
 		stillRunningLine(details({ kind: "still-running", elapsedSeconds: 30 }), 120),
 		"⏾ task-2 still running after 30s",

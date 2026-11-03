@@ -103,34 +103,3 @@ test("subagent background task has callerType and renders Type: Subagent in deta
 	const mainLines = detailLines(mainTask, 60);
 	assert.equal(mainLines[4], "Type:    Agent");
 });
-
-test("createBackgroundAwareBashTool tags subagent background tasks", async (t) => {
-	const { createBackgroundAwareBashTool } = await import("../src/bash-override.ts");
-	const dir = await mkdtemp(join(tmpdir(), "subagent-tool-test-"));
-	t.after(() => rm(dir, { recursive: true, force: true }));
-
-	const manager = createTaskManager({
-		logDir: dir,
-		killGraceMs: 500,
-		logBytes: 10_000,
-		maxFinished: 5,
-	});
-	t.after(() => manager.disposeAll());
-
-	const tool = createBackgroundAwareBashTool(dir, {
-		registry: manager,
-		fgNice: 0,
-		callerType: "subagent",
-		subagentName: "worker#1111",
-	});
-
-	const result = await (tool.execute as any)("call-1", {
-		command: "echo 'subagent tool test'",
-		background: true,
-	});
-
-	assert.equal(result.isError, false);
-	const details = result.details as any;
-	assert.equal(details.callerType, "subagent");
-	assert.equal(details.subagentName, "worker#1111");
-});

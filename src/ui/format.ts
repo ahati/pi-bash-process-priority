@@ -7,7 +7,7 @@
  */
 
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import type { BgNotificationDetails, BgTask, BgTaskOrigin, BgTaskStatus } from "../types.ts";
+import type { BgNotificationDetails, BgTask, BgTaskStatus } from "../types.ts";
 
 export const BULLET = "●";
 export const STILL_RUNNING_BULLET = "○";
@@ -132,10 +132,6 @@ export function terminalStatusLabel(task: BgTask): string {
 	if (task.signal) return task.signal;
 	if (task.exitCode !== null && task.exitCode !== undefined) return `exit ${task.exitCode}`;
 	return "";
-}
-
-export function humanizeOrigin(origin: BgTaskOrigin): string {
-	return origin === "foreground-adopted" ? "ctrl+b (foreground adopt)" : "bg_task";
 }
 
 export function singleLine(text: string): string {
@@ -458,7 +454,7 @@ export function notificationExpandedLines(
 		`  Command:  $ ${notificationCommand(task)}`,
 		`  Ran:      ${duration} · started ${startedClock} · ended ${endedClock}`,
 		`  Outcome:  ${outcome}`,
-		`  Origin:   ${humanizeOrigin(task.origin)}`,
+		`  Origin:   ${task.origin}`,
 	];
 	if (task.callerType === "subagent") {
 		lines.push(`  Caller:   Subagent${task.subagentName ? ` (${task.subagentName})` : ""}`);

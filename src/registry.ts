@@ -14,7 +14,6 @@ import { boundedRead, MAX_OUTPUT_BYTES } from "./log-reader.ts";
 import { escapeSingleQuotes } from "./nice.ts";
 import type {
 	BgTask,
-	ForegroundHandle,
 	RunOptions,
 	TaskManagerApi,
 	TaskManagerOptions,
@@ -22,7 +21,6 @@ import type {
 
 const DEFAULT_BG_NICE = 19;
 const DEFAULT_IONICE_CLASS = 3;
-const PRIORITY_TIMEOUT_MS = 5000;
 
 interface TaskRecord {
 	task: BgTask;
@@ -113,7 +111,6 @@ class TaskManager implements TaskManagerApi {
 	private readonly changeListeners = new Set<() => void>();
 	private readonly niceBin?: string;
 	private readonly ioniceBin?: string;
-	private readonly reniceBin?: string;
 	private readonly sessionId?: string;
 	private readonly logDir: string;
 	private readonly killGraceMs: number;
@@ -128,7 +125,6 @@ class TaskManager implements TaskManagerApi {
 		this.options = options;
 		this.niceBin = options.niceBin;
 		this.ioniceBin = options.ioniceBin;
-		this.reniceBin = options.reniceBin;
 		this.sessionId = options.sessionId;
 		this.logDir = options.logDir;
 		this.killGraceMs = Math.max(0, Math.floor(options.killGraceMs));
@@ -195,53 +191,6 @@ class TaskManager implements TaskManagerApi {
 			});
 			this.attachOutput(rec, child);
 		});
-	}
-
-	adopt(
-		handle: ForegroundHandle,
-		opts: {
-			name?: string;
-			callerType?: "agent" | "subagent";
-			subagentName?: string;
-			notificationTimeoutSeconds?: number;
-		} = {},
-	): BgTask {
-		const rec = this.createRecord({
-			command: handle.command,
-			cwd: handle.cwd,
-			origin: "foreground-adopted",
-			name: opts.name,
-			callerType: opts.callerType,
-			subagentName: opts.subagentName,
-			pid: handle.child.pid ?? null,
-			pgid: handle.pgid,
-			startedAt: handle.startedAt,
-		});
-		rec.child = handle.child;
-
-		// Prepend the output captured before adoption so the log has full history.
-		if (handle.preOutput?.length) this.appendLog(rec, handle.preOutput);
-
-		this.attachOutput(rec, handle.child);
-		handle.child.on("error", (error) => {
-			this.appendLog(rec, `[error] ${errorText(error)}\n`);
-		});
-		if (handle.child.exitCode !== null || handle.child.signalCode !== null) {
-			queueMicrotask(() =>
-				this.finalize(rec, handle.child.exitCode, handle.child.signalCode),
-			);
-		} else {
-			handle.child.once("close", (code, signal) => {
-				rec.resolveClosed();
-				this.finalize(rec, code, signal);
-			});
-		}
-
-		this.armStillRunning(rec, opts.notificationTimeoutSeconds);
-		this.applyAdoptedPriority(rec);
-		this.emitChange();
-		this.options.onTransition?.("adopted", this.snapshot(rec));
-		return this.snapshot(rec);
 	}
 
 	async kill(idOrPrefix: string, reason = "killed"): Promise<string> {
@@ -641,24 +590,6 @@ class TaskManager implements TaskManagerApi {
 			if ((error as NodeJS.ErrnoException).code === "ESRCH") return true;
 			this.appendLog(rec, `[kill] ${signal} failed: ${errorText(error)}\n`);
 			return false;
-		}
-	}
-
-	private applyAdoptedPriority(rec: TaskRecord): void {
-		if (!this.reniceBin && !this.ioniceBin) return;
-		const pid = rec.task.pid;
-		if (!pid) return;
-		try {
-			if (this.reniceBin) {
-				const child = spawn(this.reniceBin, ["-n", String(this.bgNice), "-g", String(rec.task.pgid ?? pid)], { stdio: "ignore" });
-				child.on("error", () => this.appendLog(rec, `[priority] renice unavailable — kept current nice level\n`));
-			}
-			if (this.ioniceBin && this.ioniceClass > 0) {
-				const child2 = spawn(this.ioniceBin, ["-c", String(this.ioniceClass), "-p", String(pid)], { stdio: "ignore" });
-				child2.on("error", () => this.appendLog(rec, `[priority] ionice unavailable — kept current IO class\n`));
-			}
-		} catch (error) {
-			this.appendLog(rec, `[priority] ${(error as Error).message}\n`);
 		}
 	}
 

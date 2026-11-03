@@ -1,7 +1,9 @@
 /**
- * Full Bash tool call renderer ported from pi-ui-enhancement.
- * Includes animated spinner, elapsed timer, intent headers, background badges,
- * redundant cd stripping, and expanded cwd display.
+ * Background-task tool call renderer.
+ *
+ * Renders this extension's own `background_task` and `manage_background_task`
+ * tools. The built-in `bash` tool is rendered by pi or pi-ui-enhancement; this
+ * package no longer owns that renderer.
  */
 
 import { Text } from "@earendil-works/pi-tui";
@@ -16,10 +18,6 @@ export interface BackgroundTaskCallArgs {
 	taskName?: string;
 	timeout?: number;
 	cwd?: string;
-	intent?: string;
-	tool?: string;
-	commandPrefix?: string;
-	description?: string;
 }
 
 export interface ManageBackgroundTaskCallArgs {
@@ -30,25 +28,19 @@ export interface ManageBackgroundTaskCallArgs {
 	lines?: number;
 }
 
-export interface BashCallRenderOptions {
-	intentMode?: "off" | "render" | "render-and-instruct";
-	showCommand?: boolean;
-	maxCommandChars?: number;
-}
-
-export interface BashCallRenderTheme {
+interface BashCallRenderTheme {
 	fg(color: string, text: string): string;
 	bold?(text: string): string;
 }
 
-export function safeBashCallTheme(theme: BashCallRenderTheme): { fg: (color: string, text: string) => string; bold: (text: string) => string } {
+function safeBashCallTheme(theme: BashCallRenderTheme): { fg: (color: string, text: string) => string; bold: (text: string) => string } {
 	return {
 		fg: (color: string, text: string) => (typeof theme?.fg === "function" ? theme.fg(color, text) : text),
 		bold: (text: string) => (typeof theme?.bold === "function" ? theme.bold(text) : text),
 	};
 }
 
-export interface BashSpinnerState {
+interface BashSpinnerState {
 	frameIndex: number;
 	startedAt?: number;
 	timer?: ReturnType<typeof setInterval>;
@@ -59,7 +51,7 @@ interface BashSpinnerStateCarrier {
 	[BASH_SPINNER_TOOL_CALL_ID_KEY]?: string;
 }
 
-export interface BashCallRenderContextLike {
+interface BashCallRenderContextLike {
 	cwd?: string;
 	executionStarted?: boolean;
 	isPartial?: boolean;
@@ -70,17 +62,8 @@ export interface BashCallRenderContextLike {
 	toolCallId?: string;
 }
 
-const activeSpinnerTimers = new Set<ReturnType<typeof setInterval>>();
 const spinnerStatesByToolCallId = new Map<string, BashSpinnerState>();
 let nextSyntheticToolCallId = 0;
-
-export function stopAllBashSpinners(): void {
-	for (const timer of activeSpinnerTimers) {
-		clearInterval(timer);
-	}
-	activeSpinnerTimers.clear();
-	spinnerStatesByToolCallId.clear();
-}
 
 function toStateCarrier(value: unknown): BashSpinnerStateCarrier | undefined {
 	if (!value || typeof value !== "object") {
@@ -124,7 +107,6 @@ function stopSpinner(toolCallId: string | undefined, state: BashSpinnerState | u
 	if (!state) return;
 	if (state.timer) {
 		clearInterval(state.timer);
-		activeSpinnerTimers.delete(state.timer);
 		state.timer = undefined;
 	}
 	state.frameIndex = 0;
@@ -147,12 +129,6 @@ function formatElapsed(elapsedMs: number): string {
 	const hours = Math.floor(totalMinutes / 60);
 	const minutes = totalMinutes % 60;
 	return `${hours}h ${minutes}m`;
-}
-
-function isDefaultShellPath(shellPath: string): boolean {
-	const normalized = shellPath.trim().replace(/\\/g, "/").toLowerCase();
-	const basename = normalized.split("/").pop() || normalized;
-	return basename === "bash" || basename === "cmd.exe";
 }
 
 function truncateCommand(command: string, maxChars: number): string {
@@ -226,7 +202,6 @@ function renderWithSpinner(
 				context.invalidate?.();
 			}, BASH_SPINNER_INTERVAL_MS);
 			spinnerState.timer = timer;
-			activeSpinnerTimers.add(timer);
 		}
 	}
 
@@ -238,10 +213,9 @@ function renderWithSpinner(
 	return text;
 }
 
-export function buildBackgroundTaskCallText(
+function buildBackgroundTaskCallText(
 	args: BackgroundTaskCallArgs,
 	rawTheme: BashCallRenderTheme,
-	options?: BashCallRenderOptions,
 	expanded?: boolean,
 	spinnerFrame?: string,
 	elapsedMs?: number,
@@ -249,7 +223,7 @@ export function buildBackgroundTaskCallText(
 ): string {
 	const theme = safeBashCallTheme(rawTheme);
 	const command = displayCommand ?? (typeof args.command === "string" ? args.command : "");
-	const commandDisplay = truncateCommand(command.trim() || "...", options?.maxCommandChars ?? 0);
+	const commandDisplay = command.trim() || "...";
 	const taskNameDisplay = cleanOptionalText(args.taskName);
 	const spinnerPrefix = spinnerFrame ? `${theme.fg("warning", `${spinnerFrame} `)}` : "";
 	const elapsedSuffix =
@@ -277,19 +251,17 @@ export function renderBackgroundTaskCall(
 	args: BackgroundTaskCallArgs,
 	theme: BashCallRenderTheme,
 	context: BashCallRenderContextLike,
-	options?: BashCallRenderOptions,
 ): Text {
 	const displayDirs = [context.cwd, cleanOptionalText(args.cwd)];
 	const displayCommand = stripDisplayCd(typeof args.command === "string" ? args.command : "", displayDirs);
 	return renderWithSpinner(context, (spinnerFrame, elapsedMs) =>
-		buildBackgroundTaskCallText(args, theme, options, context.expanded === true, spinnerFrame, elapsedMs, displayCommand),
+		buildBackgroundTaskCallText(args, theme, context.expanded === true, spinnerFrame, elapsedMs, displayCommand),
 	);
 }
 
-export function buildManageBackgroundTaskCallText(
+function buildManageBackgroundTaskCallText(
 	args: ManageBackgroundTaskCallArgs,
 	rawTheme: BashCallRenderTheme,
-	_options?: BashCallRenderOptions,
 	expanded?: boolean,
 	spinnerFrame?: string,
 	elapsedMs?: number,
@@ -323,9 +295,8 @@ export function renderManageBackgroundTaskCall(
 	args: ManageBackgroundTaskCallArgs,
 	theme: BashCallRenderTheme,
 	context: BashCallRenderContextLike,
-	options?: BashCallRenderOptions,
 ): Text {
 	return renderWithSpinner(context, (spinnerFrame, elapsedMs) =>
-		buildManageBackgroundTaskCallText(args, theme, options, context.expanded === true, spinnerFrame, elapsedMs),
+		buildManageBackgroundTaskCallText(args, theme, context.expanded === true, spinnerFrame, elapsedMs),
 	);
 }

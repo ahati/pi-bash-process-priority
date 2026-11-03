@@ -2,11 +2,10 @@
  * pi-bash-process-priority
  *
  * PRD-001: every model-issued bash command runs at a lower CPU priority.
- * PRD-003: background tasks — the extension takes over the built-in `bash`
- * tool (owning the process), adds the `bg_task` tool, a `ctrl+b` hotkey that
- * moves a running foreground command into a background task (renice + ionice
- * on adoption), and an agy-style task UI (dock below the editor, status-line
- * count, /tasks panel, Task Details, notification renderer).
+ * PRD-003: background tasks — the extension adds the `background_task` and
+ * `manage_background_task` tools and an agy-style task UI (dock below the
+ * editor, status-line count, /tasks panel, Task Details, notification
+ * renderer).
  *
  * docs/background-task-design-and-ui.md is the spec. Failure philosophy is
  * fail-open everywhere: priority claims and UI may degrade, execution never
@@ -24,20 +23,15 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { KeyId } from "@earendil-works/pi-tui";
 import type { KeybindingsManager } from "@earendil-works/pi-coding-agent";
 import { buildNiceCommand, resolveConfig, type NiceConfig } from "./src/nice.ts";
-import { probeIonice, probeNice, probeRenice } from "./src/probe.ts";
+import { probeIonice, probeNice } from "./src/probe.ts";
 import { resolveBgConfig, resolveLogDir } from "./src/config.ts";
 import { debugLog, debugLogError, initDebugLog } from "./src/debug.ts";
 import { createTaskManager } from "./src/registry.ts";
 import {
 	createBackgroundTaskTool,
 	createManageBackgroundTaskTool,
-	getForeground,
-	getSharedOperations,
-	requestBackground,
-	resetBashOverrideState,
 } from "./src/bash-override.ts";
 import { DockController, handleDockInput, installDock } from "./src/ui/dock.ts";
 import { DockEditor } from "./src/dock-editor.ts";
@@ -122,17 +116,9 @@ export default function (pi: ExtensionAPI) {
 	// Registered once per extension runtime (not session-bound).
 	pi.registerMessageRenderer("bg-task-notification", renderBgNotification);
 
-	// PRD-004 §7 — priority transport: the hook's entire body routes RPC/!
-	// shell executions into the masked tool's operations (fg nice). No control
-	// logic, no parsing (G4). Inert when bash is native.
-	pi.on("user_bash", () => {
-		const operations = getSharedOperations();
-		return operations ? { operations } : undefined;
-	});
-
 	/** §6 — one structured entry per transition; RPC clients see entry_appended. */
 	const appendTaskState = (
-		kind: "spawned" | "adopted" | "terminal" | "still-running",
+		kind: "spawned" | "terminal" | "still-running",
 		task: BgTask,
 	) => {
 		try {
@@ -158,7 +144,6 @@ export default function (pi: ExtensionAPI) {
 		registry = undefined;
 		disposeUI = undefined;
 		editorInstalled = false;
-		resetBashOverrideState();
 
 		isSubagentRuntime = isSubagentSession(ctx);
 		const subagentName = isSubagentRuntime ? getSubagentLabel(ctx) : undefined;
@@ -181,18 +166,13 @@ export default function (pi: ExtensionAPI) {
 		initDebugLog(resolveLogDir(bg, ctx.cwd));
 		debugLog("session_start", { mode: ctx.mode, hasUI: ctx.hasUI, cwd: ctx.cwd, bgNice: bg.bgNice });
 
-		const [reniceOk, ioniceOk] = await Promise.all([
-			probeRenice(bg.bgNice),
-			bg.ioniceClass > 0 ? probeIonice(bg.ioniceClass) : Promise.resolve(false),
-		]);
+		const ioniceOk = bg.ioniceClass > 0 ? await probeIonice(bg.ioniceClass) : false;
 		const warnings: string[] = [];
 		if (!niceConfig && !resolvedNice.disabled) warnings.push("nice unavailable — commands run at normal priority");
-		if (!reniceOk) warnings.push("renice unavailable — ctrl+b adoption keeps the current nice level");
 		if (bg.ioniceClass > 0 && !ioniceOk) warnings.push("ionice unavailable — background IO class not applied");
 		if (ctx.hasUI) for (const w of warnings) ctx.ui.notify(`pi-bash-process-priority: ${w}`, "warning");
 
-		const fgNice = niceConfig ? niceConfig.level : 0;
-		const bgNice = reniceOk ? bg.bgNice : 0;
+		const bgNice = bg.bgNice;
 		const ioniceClass = ioniceOk ? bg.ioniceClass : 0;
 
 		const shared = (globalThis as any)[SHARED_TASK_MANAGER_KEY] as SharedRegistryEntry | undefined;
@@ -319,11 +299,8 @@ export default function (pi: ExtensionAPI) {
 			const callerType: "agent" | "subagent" = isSubagentRuntime ? "subagent" : "agent";
 			const toolDeps = {
 				registry,
-				fgNice,
 				callerType,
 				subagentName,
-				logBytes: bg.logBytes,
-				killGraceMs: bg.killGraceMs,
 				fgTimeoutMax: bg.fgTimeoutMax,
 				bgTimeoutMax: bg.bgTimeoutMax,
 			};
@@ -333,7 +310,6 @@ export default function (pi: ExtensionAPI) {
 			pi.registerTool(createManageBackgroundTaskTool(toolDeps, "manage_background_task"));
 			pi.registerTool(createManageBackgroundTaskTool(toolDeps, "manageBackgroundTask"));
 		} catch (error) {
-			resetBashOverrideState();
 			registry = undefined;
 			if (ctx.hasUI) {
 				ctx.ui.notify(
@@ -343,25 +319,6 @@ export default function (pi: ExtensionAPI) {
 			}
 			return;
 		}
-
-		// Adoption hotkey (§7.2). Default ctrl+h — the only ctrl-letter not
-		// bound by pi's defaults (ctrl+b is tui.editor.cursorLeft; ctrl+t is
-		// app.thinking.toggle; ctrl+y is yank). Opt back into ctrl+b with
-		// PI_BG_ADOPT_KEY=ctrl+b if you accept shadowing cursor-left.
-		const adoptKeyRaw = (process.env.PI_BG_ADOPT_KEY || "ctrl+h").toLowerCase().trim();
-		// Light guard: accept modifier+key strings pi's KeyId union understands.
-		const adoptKey = /^(ctrl\+|alt\+|shift\+|super\+)*([a-z0-9]|f[1-9]|f1[0-2]|[=[\\\;'/.,`\-])$/.test(adoptKeyRaw)
-			? adoptKeyRaw
-			: "ctrl+h";
-		pi.registerShortcut(adoptKey as KeyId, {
-			description: "Move the running foreground bash command to a background task",
-			handler: () => {
-				if (!registry) return;
-				const foreground = getForeground();
-				if (!foreground) return;
-				requestBackground(foreground.toolCallId);
-			},
-		});
 
 		// /tasks and /bg-tasks commands: expanded bottom view of all tasks up to 40% screen height
 		let dockControllerRef: DockController | undefined;
@@ -475,7 +432,6 @@ export default function (pi: ExtensionAPI) {
 			// Idempotent best-effort teardown.
 		}
 		registry = undefined;
-		resetBashOverrideState();
 		niceConfig = undefined;
 		ctxRef = undefined;
 	});

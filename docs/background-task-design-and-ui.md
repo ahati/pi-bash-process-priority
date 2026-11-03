@@ -10,6 +10,8 @@
 | **Verified against** | pi `@earendil-works/pi-coding-agent` **1.4.0** (exports confirmed by reading `dist/*.d.ts`) |
 | **Out of scope here** | Interactive `!` commands (`user_bash`), Windows `powershell` tool (PRD-002), timers/cron scheduling (§14), remote execution |
 
+> **Current implementation note:** the masked `bash` tool, `ctrl+b`/`ctrl+h` foreground adoption, `adopt` action, and renice/ionice-on-adoption path described below were removed. Current releases expose separate `background_task` / `manage_background_task` tools and keep only the task UI, registry, and spawn-time priority. This document is retained as design history.
+
 ---
 
 ## 1. Summary

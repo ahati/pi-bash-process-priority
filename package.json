@@ -26,11 +26,9 @@
     "coding-agent",
     "bash",
     "nice",
-    "renice",
     "process-priority",
     "cpu-priority",
-    "scheduling",
-    "tool-override"
+    "scheduling"
   ],
   "license": "MIT",
   "engines": {

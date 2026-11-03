@@ -11,6 +11,8 @@
 | **Design principle** | **One extension, one Bash implementation, one tool.** The extension masks the built-in `bash` tool; background execution is a **parameter of that tool** (`background: true`), not a second tool and not a hook. Management is a thin second tool (`bg_task`) with no run verb. The bash execution hook exists only as a priority transport (`return { operations }`). |
 | **Out of scope here** | Custom RPC methods (no extension API in pi 1.4), keypress injection, backgrounding/registry-tracking of RPC-initiated bash (L1), interactive `!` bash priority (L2, transport applies; registry tracking does not) |
 
+> **Current implementation note:** the masked `bash` tool, `background`/`taskAction` parameters, `sharedOperations` hook, foreground adoption, and `adopt` action described below were removed. Current releases expose separate `background_task` / `manage_background_task` tools and apply bash priority through the `tool_call` re-nice hook. This document is retained as design history.
+
 ---
 
 ## 1. Summary
@@ -73,6 +75,8 @@ Constraints (verified, pi 1.4.0): RPC `bash` never passes through the registered
 ```
 
 **Renderer contract (pi-ui-enhancement ≥ 2026.10.245):** `intent`/`tool` render as the call header (`🔧 <tool> · <intent>`), `background`/`taskName` render a `⏾ background · <taskName>` badge, `cwd` renders a `cwd: <path>` line in the expanded (`ctrl+o`) view, and `taskAction` calls render a `bash tasks · <action> [taskId]` header. These args are display metadata: they never alter execution. Without pi-ui-enhancement the builtin fallback rendering is used (args ignored).
+
+> **Historical:** this section describes the pre-split single-`bash` surface. Current releases expose `background_task` (`command`, `taskName`, `timeout`, `cwd`) and a separate `manage_background_task` tool; `intent`/`tool` are no longer accepted by the background task tool.
 
 - **Foreground** (`background` unset/false): unchanged pipeline — fg nice at spawn, streaming, abort kill-tree, timeout clamped to `fgTimeoutMax`, truncation (PRD-003 §7.1 guarantees).
 - **Background** (`background: true`): registry spawn at bg priority; `timeout` clamped to `bgTimeoutMax` and enforced by the registry (kill with `reason: timeout (<n>s)`); response is the standard task notice:

@@ -2,10 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { Check } from "typebox/value";
 import {
-	createForegroundBashTool,
 	createBackgroundTaskTool,
 	createManageBackgroundTaskTool,
-	normalizeBashArgs,
 	normalizeBackgroundTaskArgs,
 	normalizeManageBackgroundTaskArgs,
 } from "../src/bash-override.ts";
@@ -20,55 +18,27 @@ function createTools() {
 	});
 	const deps = {
 		registry,
-		fgNice: 10,
 		fgTimeoutMax: 60,
 		bgTimeoutMax: 300,
 	};
-	const bashTool = createForegroundBashTool("/tmp", deps) as unknown as { parameters: Record<string, unknown> };
 	const bgTool = createBackgroundTaskTool("/tmp", deps, "background_task") as unknown as {
 		parameters: Record<string, unknown>;
 	};
 	const manageTool = createManageBackgroundTaskTool(deps, "manage_background_task") as unknown as {
 		parameters: Record<string, unknown>;
 	};
-	return { bash: bashTool.parameters, backgroundTask: bgTool.parameters, manageBackgroundTask: manageTool.parameters };
+	return { backgroundTask: bgTool.parameters, manageBackgroundTask: manageTool.parameters };
 }
 
 const valid = (schema: Record<string, unknown>, value: unknown): boolean => Check(schema, value);
 
-// ─── 1. bash (Foreground) Schema ─────────────────────────────────────────────
-
-test("bash schema: root stays object-shaped with foreground execution properties", () => {
-	const { bash } = createTools();
-	assert.equal(bash.type, "object");
-	const properties = bash.properties as Record<string, unknown>;
-	assert.deepEqual(Object.keys(properties).sort(), ["command", "cwd", "intent", "timeout", "tool"]);
-	assert.deepEqual(bash.required, ["command"]);
-});
-
-test("bash schema: every property keeps its model-facing description", () => {
-	const { bash } = createTools();
-	const properties = bash.properties as Record<string, Record<string, unknown>>;
-	for (const [key, property] of Object.entries(properties)) {
-		assert.ok(typeof property.description === "string", `property "${key}" lost its description`);
-	}
-});
-
-test("bash schema: command is required, execution options are optional", () => {
-	const { bash } = createTools();
-	assert.equal(valid(bash, {}), false, "missing command must fail");
-	assert.equal(valid(bash, { timeout: 10 }), false, "missing command must fail");
-	assert.equal(valid(bash, { command: "ls -la" }), true);
-	assert.equal(valid(bash, { command: "ls -la", timeout: 15, cwd: "/tmp", intent: "list directory", tool: "ls" }), true);
-});
-
-// ─── 2. background_task Schema ──────────────────────────────────────────────
+// ─── 1. background_task Schema ──────────────────────────────────────────────
 
 test("background_task schema: root stays object-shaped with background properties", () => {
 	const { backgroundTask } = createTools();
 	assert.equal(backgroundTask.type, "object");
 	const properties = backgroundTask.properties as Record<string, unknown>;
-	assert.deepEqual(Object.keys(properties).sort(), ["command", "cwd", "intent", "taskName", "timeout", "tool"]);
+	assert.deepEqual(Object.keys(properties).sort(), ["command", "cwd", "taskName", "timeout"]);
 	assert.deepEqual(backgroundTask.required, ["command"]);
 });
 
@@ -88,7 +58,7 @@ test("background_task schema: command is required, taskName and timeout are opti
 	);
 });
 
-// ─── 3. manage_background_task Schema ───────────────────────────────────────
+// ─── 2. manage_background_task Schema ───────────────────────────────────────
 
 test("manage_background_task schema: root is object-shaped and requires action", () => {
 	const { manageBackgroundTask } = createTools();
@@ -104,29 +74,13 @@ test("manage_background_task schema: validates all supported actions", () => {
 	assert.equal(valid(manageBackgroundTask, { action: "unknown" }), false, "unknown action must fail");
 
 	assert.equal(valid(manageBackgroundTask, { action: "list" }), true);
-	assert.equal(valid(manageBackgroundTask, { action: "adopt" }), true);
 	assert.equal(valid(manageBackgroundTask, { action: "status", taskId: "task-1" }), true);
 	assert.equal(valid(manageBackgroundTask, { action: "logs", taskId: "task-1", lines: 20 }), true);
 	assert.equal(valid(manageBackgroundTask, { action: "kill", taskId: "task-1" }), true);
 	assert.equal(valid(manageBackgroundTask, { action: "input", taskId: "task-1", input: "y\n" }), true);
 });
 
-// ─── 4. Argument Normalization Across Tools ─────────────────────────────────
-
-test("normalizeBashArgs: empty and literal null/undefined are dropped", () => {
-	const normalized = normalizeBashArgs({
-		command: "echo test",
-		cwd: "",
-		timeout: "30",
-		intent: "null",
-		tool: "undefined",
-	});
-	assert.equal(normalized.command, "echo test");
-	assert.equal(normalized.timeout, 30);
-	assert.equal("cwd" in normalized, false);
-	assert.equal("intent" in normalized, false);
-	assert.equal("tool" in normalized, false);
-});
+// ─── 3. Argument Normalization Across Tools ─────────────────────────────────
 
 test("normalizeBackgroundTaskArgs: normalizes command, taskName, timeout", () => {
 	const normalized = normalizeBackgroundTaskArgs({
@@ -159,9 +113,8 @@ test("normalizeManageBackgroundTaskArgs: maps taskAction to action and normalize
 });
 
 test("schemas: accept nulls for optional inputs", () => {
-	const { bash, backgroundTask, manageBackgroundTask } = createTools();
-	assert.equal(valid(bash, { command: "ls", timeout: null, cwd: null, intent: null, tool: null }), true);
-	assert.equal(valid(backgroundTask, { command: "sleep 5", timeout: null, cwd: null, taskName: null, intent: null, tool: null }), true);
+	const { backgroundTask, manageBackgroundTask } = createTools();
+	assert.equal(valid(backgroundTask, { command: "sleep 5", timeout: null, cwd: null, taskName: null }), true);
 	assert.equal(valid(manageBackgroundTask, { action: "list", taskId: null, input: null, lines: null }), true);
 });
 
@@ -172,15 +125,11 @@ test("normalizeBackgroundTaskArgs and normalizeManageBackgroundTaskArgs: drop ''
 			taskName: nilVal,
 			timeout: nilVal,
 			cwd: nilVal,
-			intent: nilVal,
-			tool: nilVal,
 		});
 		assert.equal(bg.command, "sleep 1");
 		assert.equal(bg.taskName, undefined);
 		assert.equal(bg.timeout, undefined);
 		assert.equal(bg.cwd, undefined);
-		assert.equal(bg.intent, undefined);
-		assert.equal(bg.tool, undefined);
 
 		const mg = normalizeManageBackgroundTaskArgs({
 			action: "status",

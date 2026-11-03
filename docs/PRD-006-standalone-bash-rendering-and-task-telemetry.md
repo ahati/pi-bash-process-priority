@@ -1,4 +1,4 @@
-# PRD-006: Standalone Bash Rendering & Task Log Telemetry
+# PRD-006: Background-Task Rendering & Task Log Telemetry
 
 | | |
 | --- | --- |
@@ -10,24 +10,25 @@
 | **Verified against** | pi `@earendil-works/pi-coding-agent` **1.4.0**, `@earendil-works/pi-tui` |
 | **Design principle** | **Self-contained zero-dependency execution and robust log telemetry.** The extension operates without external dependencies on other UI extensions like `pi-ui-enhancement`. Memory-bounded streaming and live byte tracking ensure background tasks remain lightweight and resilient under heavy output loads. |
 
+> **Current implementation note (post-split):** the standalone built-in `bash` renderer was removed in commit `2ebbafc`. `pi-bash-process-priority` now delegates `bash` rendering to pi / `pi-ui-enhancement` and only ships renderers for its own `background_task` and `manage_background_task` tools. `src/ui/bash-intent.ts` and its prompt injection have been removed; the sections below describe the current background-task scope.
+
 ---
 
 ## 1. Summary
 
-This specification defines the consolidation of standalone bash tool rendering and enhanced task telemetry in `pi-bash-process-priority`:
+This specification defines the consolidation of background-task tool rendering and enhanced task telemetry in `pi-bash-process-priority`:
 
-1. **Self-Contained Standalone Bash Rendering**:
-   Ported the complete bash tool call and execution result rendering logic from `pi-ui-enhancement` directly into `pi-bash-process-priority`:
-   - `src/ui/bash-display.ts`: Rich tool call rendering with prompt styling (`$`), tool title highlighting, background badge indicators (`⏾ background · taskName`), timeout indications, and working directory headers.
-   - `src/ui/bash-result.ts`: Result box rendering with clean output streaming, quiet command indicators, exit status formatting, and partial preview truncation hints.
+1. **Standalone Background-Task Rendering**:
+   The background task tools keep task-specific call and result rendering without depending on `pi-ui-enhancement`:
+   - `src/ui/bash-display.ts`: Call headers for `background_task` (badge, task name, `$` command, timeout, expanded `cwd:`) and `manage_background_task` (`task manager` action header).
+   - `src/ui/bash-result.ts`: Result cards for background task spawn, management actions, errors, and bounded output previews.
    - `src/ui/ansi-utils.ts`: Terminal escape sanitizer stripping problematic background color sequences that corrupt themed terminal output.
-   - `src/ui/bash-intent.ts`: Intent comment parser extracting `# intent: <summary>` and `# tool: <name>` comments from commands and formatting them into styled headers. Injects system prompt guidelines encouraging models to annotate bash commands.
 2. **Management Action Header Formatting**:
-   Management calls (`taskAction: list | status | kill | input | adopt`) render cleanly as:
+   Management calls (`action: list | status | logs | kill | input`) render cleanly as:
    ```
-   ⚙ bash tasks · list
-   ⚙ bash tasks · status task-1
-   ⚙ bash tasks · kill task-2
+   🔧 task manager · list
+   🔧 task manager · status task-1
+   🔧 task manager · kill task-2
    ```
    with spinner animations during active execution.
 3. **Memory-Safe Bounded Log Reader (`src/log-reader.ts`)**:
@@ -60,8 +61,8 @@ This specification defines the consolidation of standalone bash tool rendering a
 | ID | Goal |
 |---|---|
 | **G1** | Complete independence: zero dependencies on `pi-ui-enhancement` or external renderers. |
-| **G2** | Rich intent header extraction (`# intent: ...`) and system prompt guidance injection. |
-| **G3** | Distinct display for management actions (`taskAction`) vs standard command execution. |
+| **G2** | Task-specific call/result rendering for `background_task` and `manage_background_task` that works regardless of which extension renders built-in `bash`. |
+| **G3** | Distinct display for management actions (`action`) vs background task spawns. |
 | **G4** | Bounded tail reading guaranteeing maximum heap footprint under large log files. |
 | **G5** | Accurate live byte tracking (`bytesWritten`) updated per stream chunk. |
 | **G6** | Extended metadata support in Task Details (`PID`, `Exit`, `Output`, `Size`). |
@@ -78,43 +79,27 @@ This specification defines the consolidation of standalone bash tool rendering a
 
 ## 4. Architecture & Technical Details
 
-### 4.1 Standalone Bash Tool Display Pipeline
+### 4.1 Background-Task Display Pipeline
 
 ```
-bash tool call
- │
- ├── Parse Command String ────────► src/ui/bash-intent.ts
- │                                   ├─ Extract `# intent: <text>`
- │                                   ├─ Extract `# tool: <name>`
- │                                   └─ Strip leading redundant `cd <cwd>`
+background_task / manage_background_task call
  │
  ├── Render Call Header ──────────► src/ui/bash-display.ts
- │                                   ├─ Tool icon + title (`$`)
- │                                   ├─ Accent-styled command text
- │                                   ├─ Background badge (`⏾ background · taskName`)
- │                                   └─ Management header (`⚙ bash tasks · <action>`)
+ │                                   ├─ BackgroundTask badge + task name
+ │                                   ├─ Accent-styled `$ <command>`
+ │                                   ├─ Timeout and elapsed spinner
+ │                                   ├─ Expanded `cwd:` line
+ │                                   └─ Management header (`🔧 task manager · <action>`)
  │
  └── Render Result / Output ──────► src/ui/bash-result.ts
                                      ├─ ANSI sanitization (`src/ui/ansi-utils.ts`)
-                                     ├─ Output streaming with line-clamp preview
-                                     └─ Exit status badge (`✔ completed` / `✗ exit 1`)
+                                     ├─ Output preview with line clamping
+                                     └─ Action-specific result formatting
 ```
 
-### 4.2 Intent Instruction Injection (`src/ui/bash-intent.ts`)
+### 4.2 Intent Instruction Injection (removed)
 
-`buildBashIntentSystemPrompt(existingPrompt)` appends guidelines ensuring the model annotates complex bash invocations with user-friendly intent comments:
-
-```
-Guidelines for bash command execution:
-- Prefix complex commands with `# intent: <brief explanation>` to communicate intent to the user.
-- If delegating to a CLI tool, annotate with `# tool: <name>`.
-```
-
-The header parser matches:
-```ts
-const INTENT_REGEX = /^#\s*intent:\s*(.+)$/im;
-const TOOL_REGEX = /^#\s*tool:\s*(.+)$/im;
-```
+`src/ui/bash-intent.ts` and the `before_agent_start` prompt injection were removed in commit `2ebbafc`. Built-in bash intent headers are owned by `pi-ui-enhancement` (`bashIntentMode`); the remaining background-task renderers do not parse `# intent:` / `# tool:` comments.
 
 ### 4.3 Bounded Log Tail Reader (`src/log-reader.ts`)
 
@@ -166,13 +151,12 @@ Formatted byte sizes appear in Task Details:
 
 ## 5. Verification & Test Plan
 
-1. **Standalone Bash Rendering Unit Tests (`tests/bash-render-standalone.test.ts`)**:
-   - Header formatting with intent comments (`# intent: Build project`).
-   - Tool comments (`# tool: cargo`).
-   - Background badge rendering (`⏾ background · test-server`).
-   - Management action calls (`taskAction: "list"` $\rightarrow$ `bash tasks · list`).
+1. **Background-Task Rendering Unit Tests (`tests/bash-render-standalone.test.ts`)**:
+   - Background task call header with optional task name.
+   - Expanded `cwd:` line.
+   - Background task result card (task ID, log path, no-poll hint).
+   - Management action calls (`action: "list"` → `task manager · list`).
    - Redundant `cd <cwd>` prefix stripping.
-   - Idempotent line rendering without memory mutation across passes.
 2. **Log Reader Unit Tests (`tests/log-reader.test.ts`)**:
    - Safe behavior on non-existent files.
    - Bounded reading on large files within `maxBytes` cap.

@@ -1,7 +1,9 @@
 /**
- * Full Bash tool result renderer ported from pi-ui-enhancement.
- * Handles live preview streaming, background task results, error formatting,
- * quiet command hints, and bounded line truncation.
+ * Background-task tool result renderer.
+ *
+ * Renders results for this extension's own `background_task` and
+ * `manage_background_task` tools. Built-in bash results are rendered by pi or
+ * pi-ui-enhancement.
  */
 
 import { Text } from "@earendil-works/pi-tui";
@@ -12,7 +14,7 @@ export interface BashRenderTheme {
 	bold?(text: string): string;
 }
 
-export function safeBashResultTheme(theme: BashRenderTheme): { fg: (color: string, text: string) => string; bold: (text: string) => string } {
+function safeBashResultTheme(theme: BashRenderTheme): { fg: (color: string, text: string) => string; bold: (text: string) => string } {
 	return {
 		fg: (color: string, text: string) => (typeof theme?.fg === "function" ? theme.fg(color, text) : text),
 		bold: (text: string) => (typeof theme?.bold === "function" ? theme.bold(text) : text),
@@ -21,22 +23,13 @@ export function safeBashResultTheme(theme: BashRenderTheme): { fg: (color: strin
 
 export interface BashResultRenderOptions {
 	expanded: boolean;
-	isPartial: boolean;
 }
 
-export interface BashToolDetails {
+interface BashToolDetails {
 	exitCode?: number | null;
-	signal?: string | null;
-	fullOutputPath?: string;
-	truncation?: {
-		truncated?: boolean;
-		outputBytes?: number;
-		totalBytes?: number;
-	};
-	[key: string]: unknown;
 }
 
-export interface ToolRenderContextLike {
+interface ToolRenderContextLike {
 	args?: Record<string, unknown>;
 	cwd?: string;
 	isError?: boolean;
@@ -45,11 +38,9 @@ export interface ToolRenderContextLike {
 }
 
 const BASH_RESULT_STATE_KEY = "__piToolDisplayBashResult";
-const DEFAULT_COLLAPSED_LINES = 5;
 const DEFAULT_PREVIEW_LINES = 8;
-const DEFAULT_EXPANDED_MAX_LINES = 500;
 
-export function extractTextOutput(result: Record<string, unknown>): string {
+function extractTextOutput(result: Record<string, unknown>): string {
 	const content = result.content;
 	if (typeof content === "string") return content;
 	if (Array.isArray(content)) {
@@ -143,7 +134,7 @@ function reuseTextComponent(text: string, cached?: Text): Text {
 	return new Text(text, 0, 0);
 }
 
-export function isToolError(result: Record<string, unknown>, context?: ToolRenderContextLike): boolean {
+function isToolError(result: Record<string, unknown>, context?: ToolRenderContextLike): boolean {
 	if (result.isError === true || context?.isError === true) return true;
 	const details = result.details as BashToolDetails | undefined;
 	if (details?.exitCode !== null && details?.exitCode !== undefined && details.exitCode !== 0) {
@@ -230,7 +221,7 @@ export function renderManageBackgroundTaskResult(
 	const lines = prepareOutputLines(rawOutput, options.expanded);
 	let renderedText: string;
 
-	if (action === "kill" || action === "adopt") {
+	if (action === "kill") {
 		renderedText = `${theme.fg("accent", "✓")} ${lines.map((l) => theme.fg("toolOutput", sanitizeAnsiForThemedOutput(l))).join("\n")}`;
 	} else if (action === "list") {
 		if (rawOutput.includes("No background tasks")) {

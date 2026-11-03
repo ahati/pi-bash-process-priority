@@ -2,8 +2,8 @@
  * Shared contracts for PRD-003 background tasks.
  *
  * Pure types only: no pi imports, no node side-effects — every module in the
- * feature (registry, bash override, bg_task tool, UI, tests) codes against
- * this file so the pieces stay independently testable and swappable.
+ * feature (registry, background tools, UI, tests) codes against this file so
+ * the pieces stay independently testable and swappable.
  * See docs/background-task-design-and-ui.md (§6 architecture, §7 design).
  */
 
@@ -14,7 +14,7 @@
 export type BgTaskStatus = "running" | "completed" | "failed" | "killed";
 
 /** Who started the work. Mirrors agy's `Type: Agent` semantics (§7.8). */
-export type BgTaskOrigin = "bg_task" | "foreground-adopted";
+export type BgTaskOrigin = "bg_task";
 
 /** Notification payload kinds rendered by the §7.10 message renderer. */
 export type BgNotificationKind = "terminal" | "still-running";
@@ -69,21 +69,6 @@ export interface BgNotificationDetails {
 // Registry contract (§7.3) — implemented by src/registry.ts
 // ---------------------------------------------------------------------------
 
-/** A foreground bash child handed over by ctrl+b (§7.2 adoption input). */
-export interface ForegroundHandle {
-	child: import("node:child_process").ChildProcess;
-	/** POSIX group id (negative-pid kill target). */
-	pgid: number;
-	command: string;
-	cwd: string;
-	startedAt: number;
-	/**
-	 * Output captured before adoption (bounded tail, ≤ PI_BG_LOG_BYTES) —
-	 * prepended to the task log so it contains the full history.
-	 */
-	preOutput: Buffer;
-}
-
 export interface TaskManagerOptions {
 	/** Directory for task logs (§8 PI_BG_TASK_LOG_DIR). */
 	logDir: string;
@@ -91,11 +76,11 @@ export interface TaskManagerOptions {
 	sessionId?: string;
 	/** SIGTERM→SIGKILL grace (§8 PI_BG_KILL_GRACE_MS). */
 	killGraceMs: number;
-	/** Model-visible log read cap + adoption tail buffer (§8 PI_BG_LOG_BYTES). */
+	/** Model-visible log read cap (§8 PI_BG_LOG_BYTES). */
 	logBytes: number;
 	/** Finished tasks retained before eviction (§8 PI_BG_TASKS_MAX). */
 	maxFinished: number;
-	/** Fired on every state change (spawn/adopt/exit/kill) — drives UI. */
+	/** Fired on every state change (spawn/exit/kill) — drives UI. */
 	onChange?: () => void;
 	/**
 	 * Fired once per task on terminal transition. The wiring layer (index.ts)
@@ -104,19 +89,17 @@ export interface TaskManagerOptions {
 	onTerminal?: (task: BgTask) => void;
 	/**
 	 * Fired on every registry transition (PRD-004 §6): "spawned" when a task
-	 * starts via run(), "adopted" when a foreground call is adopted, "terminal"
-	 * when it reaches a final state. Drives bg-task-state event entries.
+	 * starts via run() and "terminal" when it reaches a final state. Drives
+	 * bg-task-state event entries.
 	 */
-	onTransition?: (kind: "spawned" | "adopted" | "terminal", task: BgTask) => void;
-	/** Background nice applied at spawn/adoption (default 19). */
+	onTransition?: (kind: "spawned" | "terminal", task: BgTask) => void;
+	/** Background nice applied at spawn (default 19). */
 	bgNice?: number;
 	/** Absolute `nice` binary path; when set, spawn uses it instead of bare PATH lookup. */
 	niceBin?: string;
 	/** Absolute `ionice` binary path (spawn-time for bg tasks). */
 	ioniceBin?: string;
-	/** Absolute `renice` binary path (adoption-time). */
-	reniceBin?: string;
-	/** ionice class applied at spawn/adoption (0 disables; default 3). */
+	/** ionice class applied at spawn (0 disables; default 3). */
 	ioniceClass?: number;
 	/** One-shot still-running notice (§7.6), armed by notificationTimeoutSeconds. */
 	onStillRunning?: (task: BgTask, elapsedSeconds: number) => void;
@@ -146,16 +129,6 @@ export interface RunOptions {
 export interface TaskManagerApi {
 	/** Start `command` at bg priority; resolves once the child spawns. */
 	run(command: string, cwd: string, options?: RunOptions): Promise<BgTask>;
-	/** Adopt a foreground child (ctrl+b) — never restarts or kills it (§7.2). */
-	adopt(
-		handle: ForegroundHandle,
-		opts?: {
-			name?: string;
-			callerType?: "agent" | "subagent";
-			subagentName?: string;
-			notificationTimeoutSeconds?: number;
-		},
-	): BgTask;
 	/** SIGTERM → grace → SIGKILL the whole group; ESRCH counts as success. */
 	kill(idOrPrefix: string, reason?: string): Promise<string>;
 	/** Write `<input>\n` to the task's stdin. */
@@ -181,24 +154,10 @@ export interface TaskManagerApi {
 	/** Stop all running background tasks. */
 	stopAllRunning?(): Promise<{ stopped: number; failures: string[] }>;
 	/**
-	 * Subscribe to registry changes (spawn/adopt/exit/kill). Returns an
+	 * Subscribe to registry changes (spawn/exit/kill). Returns an
 	 * unsubscribe function. UI surfaces (dock, panel) use this to refresh.
 	 */
 	onChange(listener: () => void): () => void;
-}
-
-// ---------------------------------------------------------------------------
-// Probes (§7.4) — implemented in src/probe.ts
-// ---------------------------------------------------------------------------
-
-/** Result of the per-session priority probe (fail-open inputs). */
-export interface PriorityProbe {
-	/** nice available (PRD-001 probe). */
-	nice: boolean;
-	/** `renice -n <level> -g <pgid>` works (needed for ctrl+b adoption). */
-	renice: boolean;
-	/** ionice available (only meaningful when ioniceClass !== 0). */
-	ionice: boolean;
 }
 
 // ---------------------------------------------------------------------------

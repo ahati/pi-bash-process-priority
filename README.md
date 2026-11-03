@@ -12,7 +12,7 @@ The extension registers a `tool_call` handler. For every call to the built-in `b
 nice -n 10 bash -c '<original command>'
 ```
 
-The outer shell forks `nice`, which execs an inner `bash` at the requested niceness; every descendant process inherits it. No tool is re-registered, so the extension composes cleanly with other bash-owning extensions (renderers, background-task managers, permission gates). The transcript keeps showing the model's original command — only execution changes.
+The outer shell forks `nice`, which execs an inner `bash` at the requested niceness; every descendant process inherits it. The built-in `bash` tool is not re-registered, so the extension composes cleanly with other bash-owning extensions (renderers, permission gates). Background work uses the separate `background_task` / `manage_background_task` tools. The transcript keeps showing the model's original command — only execution changes.
 
 ## What is implemented
 
@@ -37,7 +37,6 @@ For development: `pi --extension ./index.ts`.
 | Environment variable | Default | Meaning |
 | --- | --- | --- |
 | `PI_BASH_NICE_LEVEL` | `10` | Nice increment applied to each command (1–19). |
-| `PI_BG_ADOPT_KEY` | `ctrl+h` | Hotkey that moves the running foreground command to a background task. `ctrl+h` is the only ctrl-letter unbound by pi's defaults; set `ctrl+b` to restore the agy-style binding (shadows the built-in emacs cursor-left, which pi reports as a startup warning). |
 | `PI_BASH_NICE_DISABLE` | unset | Set to `1` to disable the rewrite entirely. |
 
 ## Scope

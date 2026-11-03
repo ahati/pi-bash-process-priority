@@ -202,30 +202,6 @@ async function scenario3_background() {
 	);
 }
 
-async function scenario4_adopt() {
-	// Foreground bash execution blocks the agent turn in Pi; steer messages are queued
-	// until the turn settles. Adoption during foreground execution is primarily driven
-	// by the interactive keyboard shortcut (ctrl+h / ctrl+b).
-	try {
-		await promptAndWait(`Run the bash tool with command "sleep 8" (foreground).`);
-		child.stdin.write(JSON.stringify({ type: "steer", message: `Move the currently running command to the background now using the bash tool's adopt task action.` }) + "\n");
-		await waitFor(
-			() => bgStates().some((state) => state.kind === "adopted"),
-			"bg-task-state adopted entry",
-			5000,
-		);
-		record("E2E-4 steer → taskAction adopt → adopted event", true);
-
-		await waitFor(
-			() => bgStates().some((state) => state.kind === "terminal" && /task/.test(state.id)),
-			"terminal entry for the adopted task",
-			30000,
-		);
-	} catch {
-		record("E2E-4 adopt handled (interactive shortcut preferred over RPC steer)", true);
-	}
-}
-
 async function scenario5_management() {
 	await promptAndWait(`List my background tasks using manage_background_task, then kill the running one. End your turn after.`);
 	const messages = await messagesJson();
@@ -306,7 +282,6 @@ try {
 	await scenario1_startupAndSchema();
 	await scenario2_foreground();
 	await scenario3_background();
-	await scenario4_adopt();
 	await scenario5_management();
 } catch (error) {
 	record("UNHANDLED", false, error instanceof Error ? error.message : String(error));

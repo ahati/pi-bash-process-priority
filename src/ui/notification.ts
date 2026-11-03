@@ -17,7 +17,6 @@ import type { BgNotificationDetails, BgTask, BgTaskStatus } from "../types.ts";
 import {
 	formatClock,
 	formatDuration,
-	humanizeOrigin,
 	notificationMeta,
 	RULE_CHAR,
 	singleLine,
@@ -116,7 +115,7 @@ export function noticeLineFromDetails(
 				`  ${label("Command: ")}${prompt} ${cmd}`,
 				`  ${label("Ran:      ")}${muted(`${duration} · started ${startedClock} · ended ${endedClock}`)}`,
 				`  ${label("Outcome:  ")}${muted(outcome)}`,
-				`  ${label("Origin:   ")}${dim(humanizeOrigin(task.origin))}`,
+				`  ${label("Origin:   ")}${dim(task.origin)}`,
 				`  ${label("Output:   ")}${dim(task.logPath)}`,
 			];
 

@@ -8,7 +8,6 @@ import {
 	renderBackgroundTaskResult,
 	renderManageBackgroundTaskResult,
 } from "../src/ui/bash-result.ts";
-import { extractProgramName, buildBashIntentSystemPrompt, BASH_INTENT_GUIDELINE_MARKER } from "../src/ui/bash-intent.ts";
 import { sanitizeAnsiForThemedOutput } from "../src/ui/ansi-utils.ts";
 import { buildNiceCommand } from "../src/nice.ts";
 
@@ -22,27 +21,6 @@ function createPassThroughTheme() {
 function renderedSingleLine(component: { render(width: number): string[] }, width = 120): string {
 	return component.render(width).join("").replace(/\s+/g, " ").trim();
 }
-
-test("extractProgramName: strips wrappers and flags to extract true program", () => {
-	assert.equal(extractProgramName("sudo apt update"), "apt");
-	assert.equal(extractProgramName("sudo -u root systemctl restart service"), "systemctl");
-	assert.equal(extractProgramName("nice -n 10 git fetch origin"), "git");
-	assert.equal(extractProgramName("env FOO=1 BAR=2 pnpm test"), "pnpm");
-	assert.equal(extractProgramName("git status | grep dirty"), "git");
-	assert.equal(extractProgramName("nohup python worker.py &"), "python");
-});
-
-test("buildBashIntentSystemPrompt: appends guideline idempotently", () => {
-	const base = "You are a helpful coding assistant.";
-	const prompted = buildBashIntentSystemPrompt(base);
-	assert.ok(prompted);
-	assert.ok(prompted.includes(base));
-	assert.ok(prompted.includes(BASH_INTENT_GUIDELINE_MARKER));
-
-	// Idempotency check: should return undefined if marker already exists
-	const duplicate = buildBashIntentSystemPrompt(prompted);
-	assert.equal(duplicate, undefined);
-});
 
 test("native bash hook: wraps bash command with nice via buildNiceCommand", () => {
 	const original = "echo hello world";
@@ -107,7 +85,7 @@ test("renderBackgroundTaskResult: renders confirmation card with task ID and log
 			content: "Tool is running as a background task with task id: task-3\nOutput: /tmp/task-3.log",
 			details: { id: "task-3", name: "test-runner", logPath: "/tmp/task-3.log" },
 		},
-		{ expanded: false, isPartial: false },
+		{ expanded: false },
 		theme,
 	);
 	const text = renderedSingleLine(comp);
@@ -122,7 +100,7 @@ test("renderBackgroundTaskResult: formats error", () => {
 	const theme = createPassThroughTheme();
 	const comp = renderBackgroundTaskResult(
 		{ content: "Timeout 999s exceeds background cap", isError: true },
-		{ expanded: false, isPartial: false },
+		{ expanded: false },
 		theme,
 		{ isError: true },
 	);
@@ -141,35 +119,24 @@ test("renderManageBackgroundTaskCall: renders action and target with wrench icon
 
 	const compKill = renderManageBackgroundTaskCall({ action: "kill", taskId: "task-1" }, theme, { cwd: "/workspace" });
 	assert.ok(renderedSingleLine(compKill).includes("🔧 task manager · kill task-1"));
-
-	const compAdopt = renderManageBackgroundTaskCall({ action: "adopt" }, theme, { cwd: "/workspace" });
-	assert.ok(renderedSingleLine(compAdopt).includes("🔧 task manager · adopt"));
 });
 
-test("renderManageBackgroundTaskResult: formats kill and adopt with checkmark", () => {
+test("renderManageBackgroundTaskResult: formats kill with checkmark", () => {
 	const theme = createPassThroughTheme();
 	const compKill = renderManageBackgroundTaskResult(
 		{ content: "Killed task-1 (sleep 100)" },
-		{ expanded: false, isPartial: false },
+		{ expanded: false },
 		theme,
 		{ args: { action: "kill" } },
 	);
 	assert.ok(renderedSingleLine(compKill).includes("✓ Killed task-1 (sleep 100)"));
-
-	const compAdopt = renderManageBackgroundTaskResult(
-		{ content: "Moved to background: task-1 (sleep 100)\nOutput: /tmp/task-1.log" },
-		{ expanded: false, isPartial: false },
-		theme,
-		{ args: { action: "adopt" } },
-	);
-	assert.ok(renderedSingleLine(compAdopt).includes("✓ Moved to background"));
 });
 
 test("renderManageBackgroundTaskResult: formats list and error", () => {
 	const theme = createPassThroughTheme();
 	const compEmpty = renderManageBackgroundTaskResult(
 		{ content: "No background tasks." },
-		{ expanded: false, isPartial: false },
+		{ expanded: false },
 		theme,
 		{ args: { action: "list" } },
 	);
@@ -177,7 +144,7 @@ test("renderManageBackgroundTaskResult: formats list and error", () => {
 
 	const compError = renderManageBackgroundTaskResult(
 		{ content: "Unknown task: task-99", isError: true },
-		{ expanded: false, isPartial: false },
+		{ expanded: false },
 		theme,
 		{ isError: true },
 	);
