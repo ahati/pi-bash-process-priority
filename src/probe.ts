@@ -40,6 +40,24 @@ export function probeNice(level: number): Promise<boolean> {
 	});
 }
 
+/** Resolve a binary's absolute path via `which`; undefined when not found. */
+export function resolveBinPath(name: string): Promise<string | undefined> {
+	return new Promise((resolve) => {
+		try {
+			execFile("which", [name], { timeout: PROBE_TIMEOUT_MS }, (error, stdout) => {
+				if (error) {
+					resolve(undefined);
+					return;
+				}
+				const p = stdout.trim().split("\n")[0]?.trim();
+				resolve(p && p.startsWith("/") ? p : undefined);
+			});
+		} catch {
+			resolve(undefined);
+		}
+	});
+}
+
 /** `ionice -c <class> true` probe; class 0 (off) or missing ionice → false. */
 export function probeIonice(ioniceClass: number): Promise<boolean> {
 	if (!Number.isFinite(ioniceClass) || ioniceClass <= 0) return Promise.resolve(false);

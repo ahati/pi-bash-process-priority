@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -136,6 +136,36 @@ test("run completes: status, exitCode, endedAt, log header", async (t) => {
 	assert.ok(log.includes("[exited] 0 after "));
 	assert.equal(h.manager.get("1")?.id, "task-1", "bare digits resolve");
 	assert.equal(h.manager.hasRunning(), false);
+});
+
+test("run applies nice and ionice prefixes from the configured binaries", async (t) => {
+	const scriptDir = await mkdtemp(join(tmpdir(), "pi-bg-priority-"));
+	t.after(() => rm(scriptDir, { recursive: true, force: true }));
+
+	const nicePath = join(scriptDir, "nice");
+	const ionicePath = join(scriptDir, "ionice");
+	await writeFile(
+		nicePath,
+		`#!/usr/bin/env bash\nprintf 'FAKE_NICE %s\\n' "$*"\nshift 2\nexec "$@"\n`,
+		{ mode: 0o755 },
+	);
+	await writeFile(
+		ionicePath,
+		`#!/usr/bin/env bash\nprintf 'FAKE_IONICE %s\\n' "$*"\nshift 2\nexec "$@"\n`,
+		{ mode: 0o755 },
+	);
+
+	const h = await harness({ niceBin: nicePath, ioniceBin: ionicePath, bgNice: 19, ioniceClass: 3 });
+	t.after(() => cleanup(h));
+
+	const task = await h.manager.run("printf 'PAYLOAD\\n'", h.dir);
+	const done = await h.waitTerminal(task.id);
+	const log = await readFile(done.logPath, "utf8");
+
+	assert.equal(done.status, "completed");
+	assert.match(log, /FAKE_NICE -n 19/);
+	assert.match(log, /FAKE_IONICE -c 3/);
+	assert.match(log, /PAYLOAD/);
 });
 
 test("logPath includes sessionId when provided", async (t) => {

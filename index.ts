@@ -25,7 +25,7 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { KeybindingsManager } from "@earendil-works/pi-coding-agent";
 import { buildNiceCommand, resolveConfig, type NiceConfig } from "./src/nice.ts";
-import { probeIonice, probeNice } from "./src/probe.ts";
+import { probeIonice, probeNice, resolveBinPath } from "./src/probe.ts";
 import { resolveBgConfig, resolveLogDir } from "./src/config.ts";
 import { debugLog, debugLogError, initDebugLog } from "./src/debug.ts";
 import { createTaskManager } from "./src/registry.ts";
@@ -174,6 +174,12 @@ export default function (pi: ExtensionAPI) {
 
 		const bgNice = bg.bgNice;
 		const ioniceClass = ioniceOk ? bg.ioniceClass : 0;
+		const [niceBin, ioniceBin] = await Promise.all([
+			resolveBinPath("nice"),
+			bg.ioniceClass > 0 && ioniceOk ? resolveBinPath("ionice") : Promise.resolve(undefined),
+		]);
+		// PI_BASH_NICE_DISABLE disables all nice wrapping, background spawns included.
+		const bgNiceBin = resolvedNice.disabled ? undefined : niceBin;
 
 		const shared = (globalThis as any)[SHARED_TASK_MANAGER_KEY] as SharedRegistryEntry | undefined;
 		if (isSubagentRuntime && shared) {
@@ -186,6 +192,8 @@ export default function (pi: ExtensionAPI) {
 				killGraceMs: bg.killGraceMs,
 				logBytes: bg.logBytes,
 				maxFinished: bg.tasksMax,
+				niceBin: bgNiceBin,
+				ioniceBin,
 				bgNice,
 				ioniceClass,
 				onChange: () => {
