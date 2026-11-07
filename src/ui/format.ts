@@ -290,21 +290,6 @@ export function formatCleanTaskRow(
 }
 
 /**
- * Resize handle row between the master list and the details pane
- * (PRD-007 Approach A): `⇕ (drag or +/- to resize) ──────────…`
- * Always exactly one row; the whole row is the drag/click target.
- */
-export function formatResizeHandle(
-	width: number,
-	theme?: { fg: (color: any, text: string) => string },
-): string {
-	const label = "⇕ (drag or +/- to resize) ";
-	const dimFn = theme ? (t: string) => theme.fg("dim", t) : (t: string) => t;
-	const ruleLen = Math.max(0, width - visibleWidth(label));
-	return truncateToWidth(dimFn(label + RULE_CHAR.repeat(ruleLen)), width);
-}
-
-/**
  * Format standalone Cwd and Log lines:
  *   "Cwd: /home/hati/workspace"
  *   "Log: /home/hati/workspace/.pi/bg-tasks/task-2.log"

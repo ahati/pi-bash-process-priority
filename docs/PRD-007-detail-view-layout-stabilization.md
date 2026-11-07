@@ -384,3 +384,30 @@ the operator's name and API keys are not.**
   `--no-context-files --no-skills --no-extensions --no-session` and `cwd`
   `/tmp` — no AGENTS.md, no skills, no repo context, no persisted session.
 - Scan result for the current synthetic fixture: clean.
+
+---
+
+## 12. Phase 2 — Approach B adopted (2026-11-07)
+
+Daily use showed the height-capped two-panel view left each pinned pane with
+only 2–3 rows at the default height, so the split was replaced by **Approach
+B** (single-scroll subpage):
+
+- The expanded dock is now **one sticky header + one scroll window + one
+  status row**. The document is `task list → Task Details → Output`, so both
+  former panes scroll together (wheel, PgUp/PgDn, Home/End).
+- The split handle and `listOffset` semantics are gone; `+`/`-` and `[`/`]`
+  now resize the **whole panel** (the same knob as dragging the `▬` grip on
+  the top rule).
+- The panel opens at **50% of the terminal** and can be dragged up to the
+  **maximum usable height** (`rows − 5`: transcript minimum + editor frame +
+  footer). `PI_BG_DOCK_MAX_HEIGHT_SHARE` caps that ceiling (default `1`; set
+  `0.5` for the old never-taller-than-half behavior).
+- Flicker contract preserved: the rendered row count is
+  `2 + viewportRows`, a pure function of `(termHeight, requestedHeight)`; only
+  the scroll offset changes while reading.
+- `src/ui/dock-document.ts` builds the pure document; `src/ui/dock-layout.ts`
+  holds the height model. The `▬▬▬▬▬▬▬▬▬▬` (U+25AC) grip marks the drag target.
+
+Phase-1 notes above describe the superseded `⇕` split row; they are kept for
+history.

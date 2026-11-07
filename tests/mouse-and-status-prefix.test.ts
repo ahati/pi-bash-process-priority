@@ -191,7 +191,7 @@ test("dockRow: RHS status is red/green based on status when theme is provided", 
 	assert.ok(failedRow.includes("[error]failed (exit 1)[/error]"), "failed dock row status is red");
 });
 
-test("DockController: expanded mode uses the fixed two-panel layout (PRD-007 Approach A)", () => {
+test("DockController: expanded mode is one single-scroll page", () => {
 	const running = makeTask({ id: "task-1", status: "running" });
 	const completed = makeTask({ id: "task-2", status: "completed", exitCode: 0 });
 	const failed = makeTask({ id: "task-3", status: "failed", exitCode: 1 });
@@ -202,40 +202,33 @@ test("DockController: expanded mode uses the fixed two-panel layout (PRD-007 App
 		() => allTasks,
 	);
 
-	// 1. Normal mode: only running tasks, max visible = 3
+	// 1. Normal mode: only running tasks, compact window of 3.
 	assert.equal(controller.isExpanded(), false);
 	assert.equal(controller.getTasks().length, 1);
-	assert.equal(controller.getMaxVisible(30), 3);
+	assert.equal(controller.getMaxVisible(), 3);
 
-	// 2. /tasks expanded mode: all tasks (running, completed, failed).
-	// 30 rows: the 50% cap allows 15 rows. Metadata flexes to 2 rows, chrome
-	// is 11, the pane budget is 4 → default L = ceil(4 * 0.35) = 2, O = 2.
+	// 2. /tasks expanded mode: all tasks, one scroll page opening at 50%.
 	assert.equal(controller.expandTasks(), true);
 	assert.equal(controller.isExpanded(), true);
 	assert.equal(controller.getTasks().length, 3);
-	assert.equal(controller.getMaxVisible(30), 2);
-	assert.equal(controller.getOutputRows(30), 2);
 	const metrics = controller.getLayoutMetrics(30);
 	assert.equal(metrics.totalRows, 15);
 	assert.equal(metrics.totalRows, Math.floor(30 * 0.5));
-	assert.equal(metrics.metaRows, 2);
-	assert.equal(metrics.listStart, 3);
-	assert.equal(metrics.handleIndex, 5);
-	assert.equal(metrics.listEnd, 5);
+	assert.equal(metrics.viewportRows, 13);
+	assert.equal(metrics.viewportStart, 1);
 	assert.equal(metrics.statusIndex, 14);
+	assert.equal(metrics.maxTotalRows, 25); // 30 - 5 reserved screen rows
 
-	// 3. Resize: +/- moves rows between the panes within the clamps.
-	assert.equal(controller.resizeList(1, 30), true);
-	assert.equal(controller.getMaxVisible(30), 3);
-	assert.equal(controller.getOutputRows(30), 1);
-	assert.equal(controller.resizeList(99, 30), false); // already at maxListRows
-	assert.equal(controller.getMaxVisible(30), 3);
-	assert.equal(controller.resizeList(-99, 30), true); // clamps at min
-	assert.equal(controller.getMaxVisible(30), 1);
-	assert.equal(controller.getOutputRows(30), 3);
+	// 3. Resize: the whole panel grows between its floor and the ceiling.
+	assert.equal(controller.resizeTotal(1, 30), true);
+	assert.equal(controller.getLayoutMetrics(30).totalRows, 16);
+	assert.equal(controller.resizeTotal(99, 30), true);
+	assert.equal(controller.getLayoutMetrics(30).totalRows, 25);
+	assert.equal(controller.resizeTotal(99, 30), false);
+	assert.equal(controller.resizeTotal(-99, 30), true);
+	assert.equal(controller.getLayoutMetrics(30).totalRows, 3);
 
-	// 4. Small terminal: the 50% cap still holds (fresh controller → default
-	// split); below the pane floor the layout degrades and takes its minimum.
+	// 4. Small terminals: still open at 50%; only tiny screens degrade.
 	const smallTasks = [
 		makeTask({ id: "task-1", status: "running" }),
 		makeTask({ id: "task-2", status: "completed", exitCode: 0 }),
@@ -247,17 +240,15 @@ test("DockController: expanded mode uses the fixed two-panel layout (PRD-007 App
 	small.expandTasks();
 	assert.equal(small.getLayoutMetrics(24).degraded, false);
 	assert.equal(small.getLayoutMetrics(24).totalRows, 12);
-	assert.equal(small.getMaxVisible(24), 2);
-	assert.equal(small.getOutputRows(24), 2);
-	assert.equal(small.getLayoutMetrics(16).degraded, true);
-	assert.equal(small.getLayoutMetrics(16).totalRows, 10);
+	assert.equal(small.getLayoutMetrics(24).viewportRows, 10);
+	assert.equal(small.getLayoutMetrics(7).degraded, true);
+	assert.equal(small.getLayoutMetrics(7).totalRows, 3);
 
 	// 5. ESC / collapseTasks returns to normal reduced-list view
 	controller.collapseTasks();
 	assert.equal(controller.isExpanded(), false);
 	assert.equal(controller.getTasks().length, 1);
-	assert.equal(controller.getMaxVisible(30), 3);
-	assert.equal(controller.getOutputRows(30), 0);
+	assert.equal(controller.getMaxVisible(), 3);
 });
 
 test("formatHeaderLine: formats full-width header with title and rules", () => {
@@ -341,16 +332,14 @@ test("merged Master-Detail screen renders master list, details (with Cwd and Log
 	const widget = widgetFactory({ terminal: { rows: 60 }, requestRender() {} }, theme);
 	const lines = widget.render(140);
 
-	// 1. Header with count hint + subtitle (PRD-007: count moved to the rule)
+	// 1. Sticky header with the task count + selected task
 	assert.ok(lines.some((l: string) => l.includes("Background Tasks") && l.includes("2 tasks")));
-	assert.ok(lines.some((l: string) => l.includes("current session branch")));
 
-	// Fixed two-panel geometry at 60 rows: 30 rows total (50% cap) →
-	// 3 header + 6 list + 1 handle + 1 title + 6 meta + 1 rule + 2 output
-	// header + 9 output + 1 status.
+	// Single-scroll geometry at 60 rows: 30 rows total (50% opening) →
+	// 1 header + 28 scroll-window rows + 1 status.
 	const metrics = controller.getLayoutMetrics(60);
 	assert.equal(lines.length, metrics.totalRows);
-	assert.ok(lines.some((l: string) => l.includes("drag or +/- to resize")));
+	assert.equal(metrics.viewportRows, 28);
 
 	// 2. Both tasks in master list
 	assert.ok(lines.some((l: string) => l.includes("test-alpha") && l.includes("task-1")));

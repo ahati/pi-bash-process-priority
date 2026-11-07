@@ -101,7 +101,7 @@ test("DockController: reconcile exits dock mode when rows vanish", async () => {
 	}
 });
 
-test("DockController: openDetail, scrollDetail, and closeDetail", async () => {
+test("DockController: openDetail, scrollDocument, and closeDetail", async () => {
 	const reg = makeRegistry();
 	try {
 		const task = await reg.run("sleep 10", "/tmp");
@@ -111,17 +111,17 @@ test("DockController: openDetail, scrollDetail, and closeDetail", async () => {
 		assert.equal(controller.isDetail(), true);
 		assert.equal(controller.getDetailTask()?.id, task.id);
 
-		controller.setMaxScroll(20);
-		controller.scrollDetail(5);
-		assert.equal(controller.getDetailScroll().scroll, 5);
-		assert.equal(controller.getDetailScroll().follow, false);
+		controller.setScrollMax(20);
+		controller.scrollDocument(5);
+		assert.equal(controller.getScroll().top, 5);
+		assert.equal(controller.getScroll().follow, false);
 
-		controller.scrollDetailBottom();
-		assert.equal(controller.getDetailScroll().scroll, 20);
-		assert.equal(controller.getDetailScroll().follow, true);
+		controller.scrollDocumentBottom();
+		assert.equal(controller.getScroll().top, 20);
+		assert.equal(controller.getScroll().follow, true);
 
-		controller.scrollDetailTop();
-		assert.equal(controller.getDetailScroll().scroll, 0);
+		controller.scrollDocumentTop();
+		assert.equal(controller.getScroll().top, 0);
 
 		// exitDock in detail mode unfocuses dock but preserves detail view
 		controller.exitDock();

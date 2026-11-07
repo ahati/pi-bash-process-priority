@@ -1,165 +1,105 @@
 /**
- * Pure layout math for the expanded master-detail dock — PRD-007 Approach A
- * (fixed two-panel) plus the terminal-height cap and the two-axis resize.
+ * Pure layout math for the expanded dock — single-scroll subpage.
  *
- * Two user knobs, both clamped to a deterministic range:
+ * The expanded view is one resizable panel: a sticky header row, one scroll
+ * window over the whole document (task list → details → output tail), and a
+ * fixed status row. There is no internal split any more: the list, metadata
+ * and log scroll together, so a 50%-height dock spends its rows on content
+ * instead of fixed chrome.
  *
- *   - `totalRows` — the whole widget's height. Dragged via the block grip
- *     (▬▬▬▬) on the top rule, or `[` / `]`. Capped at 50% of the screen.
- *   - `listRows`  — the master-list pane. Dragged via the `⇕` row, or `+`/`-`.
- *     The output pane absorbs the difference.
+ * Height model:
  *
- * Height cap (DOCK_DEFAULT_MAX_HEIGHT_SHARE = 0.5):
+ *   defaultTotalRows = floor(termHeight * DOCK_DEFAULT_HEIGHT_SHARE)   (50%)
+ *   capTotalRows     = min(floor(termHeight * maxHeightShare),
+ *                          termHeight - DOCK_SCREEN_RESERVE_ROWS)
+ *   totalRows        = clamp(requested ?? defaultTotalRows,
+ *                            DOCK_MIN_ROWS, capTotalRows)
  *
- *   capTotalRows = min(floor(termHeight * share), termHeight - reserve)
+ * Dragging the block grip (▬▬▬▬) on the top rule or pressing `[` / `]` moves
+ * the panel between its 3-row floor and the maximum the screen can give it
+ * (full screen minus the transcript/editor/footer reserve). The default
+ * opening height stays at half the screen; PI_BG_DOCK_MAX_HEIGHT_SHARE can
+ * lower the drag ceiling (e.g. 0.5 to hard-cap it at half the screen).
  *
- * so the expanded dock never covers more than half the vertical screen. The
- * metadata group flexes (6 → 0 rows) before the cap is violated; below the
- * absolute floor (chrome + one row per pane) the layout is `degraded` and the
- * floor wins over the cap.
+ * Row budget:
  *
- * Row budget (top to bottom, every section fixed for a given height):
+ *   ── Background Tasks ▬▬▬▬▬▬▬▬▬▬ ────── 3 tasks · task-2 running   ← sticky header (1)
+ *   > ● task-a                       12s task-1                       ┐
+ *     ✓ task-b                        8s task-2                       │
+ *                                                                     │
+ *   Task Details                                                      │ one scroll window
+ *   Command: …                                                        │ over the whole
+ *   …                                                                 │ document
+ *   ───────────────────────────────────────────────────────────       │
+ *   Output                                                            │
+ *   [log tail lines]                                                  ┘
+ *   lines 1–18 of 240 · ↑/↓ select · …                               ← status (1)
  *
- *   ── Background Tasks ▬▬▬▬▬▬▬▬▬▬ ─────── N tasks · 1–3 of 7   ┐ header (3)
- *   current session branch                                        │
- *                                                               ┘
- *   > ✓ task-a                     12s task-1           ┐ master list
- *     ● task-b                      3s task-2           │ L rows
- *     ⋮ (blank pad rows)                                ┘
- *   ⇕ (drag or +/- to resize) ──────────────────────────   1 split handle
- *   Task Details                                          0–1 (hidden with meta)
- *   Command: …                                        ┐
- *   Status:  …                                        │ metadata
- *   Type:    …                                        │ 0–6 rows
- *   Started: …                                        │ (padded)
- *   Cwd:     …                                        │
- *   Log:     …                                        ┘
- *   ─────────────────────────────────────────────────────   1 rule
- *   Output                                                1
- *                                                         1 blank
- *   [log tail lines]                                  ┐ output
- *   ⋮ (blank pad rows)                                │ O rows
- *                                                     ┘
- *   following tail 1.2KB · ↑/↓ select · …                 1 status
- *
- * Total = DOCK_CHROME_NO_META_ROWS(8) + titleRows + metaRows + L + O. It is a
- * pure function of `(termHeight, requested sizes)` — never of the selection,
- * task count, or output volume — so pi-tui's line-diff renderer stays on
- * stable geometry.
+ * Total = 2 + viewportRows. The rendered line count is a pure function of
+ * `(termHeight, requestedTotalRows)` — never of the selection, task count or
+ * output volume — so pi-tui's line-diff renderer keeps stable geometry.
  *
  * No side effects, no theme, no controller state — pure string/number math.
  */
 
-/** Header rule + subtitle + blank separator. */
-export const DOCK_HEADER_ROWS = 3;
-/** The resizable boundary row between master list and details. */
-export const DOCK_HANDLE_ROWS = 1;
-/** "Task Details" title row (hidden when the metadata group collapses). */
-export const DOCK_DETAIL_TITLE_ROWS = 1;
-/** Metadata group height: Command, Status, Type, Started, Cwd, Log (padded when absent). */
-export const DOCK_META_ROWS = 6;
-/** Divider rule between details and output. */
-export const DOCK_RULE_ROWS = 1;
-/** "Output" title + blank separator. */
-export const DOCK_OUTPUT_HEADER_ROWS = 2;
-/** Trailing status/hint line. */
+/** Sticky header rule (title, height grip, task/selection hint). */
+export const DOCK_HEADER_ROWS = 1;
+/** Trailing status/scroll/hint row. */
 export const DOCK_STATUS_ROWS = 1;
-
-/** Maximum chrome: every section visible (full metadata group + title). */
-export const DOCK_FIXED_ROWS =
-	DOCK_HEADER_ROWS +
-	DOCK_HANDLE_ROWS +
-	DOCK_DETAIL_TITLE_ROWS +
-	DOCK_META_ROWS +
-	DOCK_RULE_ROWS +
-	DOCK_OUTPUT_HEADER_ROWS +
-	DOCK_STATUS_ROWS; // 15
-
-/** Chrome that never flexes — everything except the details title + metadata. */
-export const DOCK_CHROME_NO_META_ROWS =
-	DOCK_HEADER_ROWS +
-	DOCK_HANDLE_ROWS +
-	DOCK_RULE_ROWS +
-	DOCK_OUTPUT_HEADER_ROWS +
-	DOCK_STATUS_ROWS; // 8
-
-/** Default master-list pane size (used for the default split when it fits). */
-export const DOCK_MIN_LIST_ROWS = 3;
-/** Default output pane size (used for the default split when it fits). */
-export const DOCK_MIN_OUTPUT_ROWS = 4;
-
-/** Absolute pane floor when the user drags the split under a tight height cap. */
-export const DOCK_MIN_PANE_ROWS = 1;
+/** Fixed chrome: header + status. */
+export const DOCK_CHROME_ROWS = DOCK_HEADER_ROWS + DOCK_STATUS_ROWS; // 2
+/** Smallest scroll window (one document row). */
+export const DOCK_MIN_CONTENT_ROWS = 1;
+/** Absolute floor for the panel: chrome + one content row. */
+export const DOCK_MIN_ROWS = DOCK_CHROME_ROWS + DOCK_MIN_CONTENT_ROWS; // 3
 
 /**
- * Rows per pane the cap protects before the metadata group is sacrificed.
- * Keeps the metadata visible on normal terminals (e.g. 40 rows) while leaving
- * at least 2 list + 2 output rows inside the cap.
+ * Screen rows the panel always leaves alone when maximized: the transcript's
+ * one-row minimum, the editor's three-row frame (top border + one line +
+ * bottom border), and the footer. This is what "100%" means for a
+ * below-editor widget — the editor must stay usable, so the panel cannot
+ * literally own every terminal row. A multi-line editor squeezes the panel's
+ * bottom at the ceiling; drag the top grip down to make room.
  */
-export const DOCK_CAP_PANE_ROWS = 2;
+export const DOCK_SCREEN_RESERVE_ROWS = 5;
 
-/**
- * Rows reserved below the widget for the editor + footer so they stay visible.
- * The dock never grows past `min(termHeight - this, height cap)` unless the
- * layout is degraded (terminal too small for the pane floor).
- */
-export const DOCK_EDITOR_RESERVE_ROWS = 6;
-
-/** Share of the L+O budget the master list takes by default (before user resize). */
-export const DOCK_DEFAULT_LIST_SHARE = 0.35;
-
-/** Default cap: the expanded dock may use at most this share of the terminal. */
-export const DOCK_DEFAULT_MAX_HEIGHT_SHARE = 0.5;
+/** Opening height: the panel starts at half the screen. */
+export const DOCK_DEFAULT_HEIGHT_SHARE = 0.5;
+/** Default drag ceiling: the maximum usable height (100% minus the reserve). */
+export const DOCK_DEFAULT_MAX_HEIGHT_SHARE = 1;
 /** Lower bound accepted for PI_BG_DOCK_MAX_HEIGHT_SHARE. */
 export const DOCK_MIN_MAX_HEIGHT_SHARE = 0.2;
 /** Upper bound accepted for PI_BG_DOCK_MAX_HEIGHT_SHARE. */
-export const DOCK_MAX_MAX_HEIGHT_SHARE = 0.9;
+export const DOCK_MAX_MAX_HEIGHT_SHARE = 1;
 
-/** Per-task tail cache size (PRD-007 G2): recent tails survive selection changes. */
+/** Per-task tail cache size: recent tails survive selection changes. */
 export const DOCK_TAIL_CACHE_SIZE = 4;
 
-/** Row boundaries of the rendered widget, 0-based. `end` indices are exclusive. */
+/** Row boundaries of the rendered panel, 0-based. */
 export interface DockLayoutMetrics {
-	/** Effective master-list rows (L). */
-	listRows: number;
-	/** Effective output tail rows (O). */
-	outputRows: number;
-	/** Total widget height: chromeRows + listRows + outputRows. */
+	/** Total panel height: DOCK_CHROME_ROWS + viewportRows. */
 	totalRows: number;
-	/** Largest listRows a user drag may request (output keeps one row). */
-	maxListRows: number;
-	/** Default listRows when the user has not resized (already clamped). */
-	defaultListRows: number;
-	/** Effective metadata group height: 0…DOCK_META_ROWS. */
-	metaRows: number;
-	/** "Task Details" title rows: 1 with metadata, 0 when it collapses. */
-	detailTitleRows: number;
-	/** Effective chrome for this layout: 8 + detailTitleRows + metaRows. */
-	chromeRows: number;
-	/** Smallest total the user may drag to (chrome + one row per pane). */
+	/** Number of document rows visible at once (the scroll window). */
+	viewportRows: number;
+	/** Smallest total the user may drag to. */
 	minTotalRows: number;
-	/** Largest total the user may drag to (the height cap, or minTotal when degraded). */
+	/** Largest total the user may drag to (the drag ceiling). */
 	maxTotalRows: number;
-	/** Raw cap before the feasibility floor: min(floor(rows*share), rows - reserve). */
+	/** Share-based ceiling before the screen reserve: floor(rows * share). */
 	capTotalRows: number;
-	/** Height share applied to the terminal (0.2–0.9). */
+	/** Opening height (50% of the terminal, clamped). */
+	defaultTotalRows: number;
+	/** Height share applied to the terminal (0.2–1). */
 	maxHeightShare: number;
-	/** True when the terminal is too small to honor the cap with the pane floor. */
+	/** True when the terminal cannot fit the 3-row floor (cap below it). */
 	degraded: boolean;
+	/** Sticky header row (0). */
 	headerRows: number;
-	/** First list row (= headerRows). */
-	listStart: number;
-	/** One past the last list row. */
-	listEnd: number;
-	/** The split-handle row. */
-	handleIndex: number;
-	/** The details title row (also the first metadata row when the title is hidden). */
-	detailTitleIndex: number;
-	metaStart: number;
-	ruleIndex: number;
-	outputTitleIndex: number;
-	outputStart: number;
-	/** The trailing status/hint row (= totalRows - 1). */
+	/** First scroll-window row (= headerRows). */
+	viewportStart: number;
+	/** One past the last scroll-window row. */
+	viewportEnd: number;
+	/** Status row (= totalRows - 1). */
 	statusIndex: number;
 }
 
@@ -180,9 +120,9 @@ export function clampToRange(value: number, min: number, max: number): number {
 }
 
 /**
- * Parse the height cap from a number, a decimal string ("0.5"), or a
+ * Parse the drag ceiling from a number, a decimal string ("0.5"), or a
  * percentage string ("50%"). Invalid input falls back; valid input is clamped
- * to [0.2, 0.9] so a typo can never hide the dock or reclaim the whole screen.
+ * to [0.2, 1] so a typo can never hide the dock.
  */
 export function resolveDockMaxHeightShare(
 	value?: string | number,
@@ -206,109 +146,58 @@ export function resolveDockMaxHeightShare(
 	return Math.min(DOCK_MAX_MAX_HEIGHT_SHARE, Math.max(DOCK_MIN_MAX_HEIGHT_SHARE, parsed));
 }
 
-/** Options for {@link computeLayout}: the user-resized total, and the cap. */
+/** Options for {@link computeLayout}: the user-resized height, and the cap. */
 export interface DockLayoutOptions {
-	/** User-dragged total widget height in rows. Defaults to the height cap. */
+	/** User-dragged total panel height in rows. Defaults to the 50% opening. */
 	totalRows?: number;
-	/** Max share of terminal rows the widget may occupy (0.2–0.9, default 0.5). */
+	/** Drag ceiling as a share of terminal rows (0.2–1, default 1). */
 	maxHeightShare?: number;
 }
 
 /**
- * Compute the fixed two-panel layout for a terminal height.
+ * Compute the single-scroll layout for a terminal height.
  *
- * `requestedListRows`/`options.totalRows` are the user-resized knobs;
- * `undefined` means "user has not resized" → the defaults are derived from the
- * terminal height and the height cap. `options.maxHeightShare` overrides the
- * cap (PI_BG_DOCK_MAX_HEIGHT_SHARE).
+ * `options.totalRows` is the user-resized knob; `undefined` means "user has
+ * not resized" → the panel opens at half the terminal. Geometry re-clamps on
+ * every call, so terminal resizes and stored drags always stay in range.
  */
 export function computeLayout(
 	termHeight?: number,
-	requestedListRows?: number,
 	options: DockLayoutOptions = {},
 ): DockLayoutMetrics {
 	const rows = resolveTermHeight(termHeight);
 	const maxHeightShare = resolveDockMaxHeightShare(options.maxHeightShare);
 
-	// Hard height cap: never more than `share` of the screen, and always leave
-	// the editor/footer reserve intact.
+	// Hard ceiling: the share limit, and never the rows the transcript,
+	// editor and footer need.
 	const capTotalRows = Math.max(
-		1,
-		Math.min(Math.floor(rows * maxHeightShare), rows - DOCK_EDITOR_RESERVE_ROWS),
+		DOCK_MIN_ROWS,
+		Math.min(Math.floor(rows * maxHeightShare), rows - DOCK_SCREEN_RESERVE_ROWS),
 	);
-
-	// Metadata is the flex section: reserve DOCK_CAP_PANE_ROWS per pane inside
-	// the cap, then give the remainder to the details group up to six rows.
-	const metaBudget =
-		capTotalRows -
-		DOCK_CHROME_NO_META_ROWS -
-		DOCK_DETAIL_TITLE_ROWS -
-		DOCK_CAP_PANE_ROWS * 2;
-	const metaRows = clampToRange(metaBudget, 0, DOCK_META_ROWS);
-	const detailTitleRows = metaRows > 0 ? DOCK_DETAIL_TITLE_ROWS : 0;
-	const chromeRows = DOCK_CHROME_NO_META_ROWS + detailTitleRows + metaRows;
-
-	const minTotalRows = chromeRows + DOCK_MIN_PANE_ROWS * 2;
-	const degraded = capTotalRows < minTotalRows;
-	const maxTotalRows = Math.max(minTotalRows, capTotalRows);
-	const totalRows = clampToRange(
-		options.totalRows ?? maxTotalRows,
-		minTotalRows,
+	const degraded = rows - DOCK_SCREEN_RESERVE_ROWS < DOCK_MIN_ROWS;
+	const maxTotalRows = Math.max(DOCK_MIN_ROWS, capTotalRows);
+	const defaultTotalRows = clampToRange(
+		Math.floor(rows * DOCK_DEFAULT_HEIGHT_SHARE),
+		DOCK_MIN_ROWS,
 		maxTotalRows,
 	);
-	const budget = totalRows - chromeRows; // >= 2
-
-	// Pane defaults: the classic 3/4 minimums apply when they fit; on a tight
-	// cap both panes fall back to one row so the user can still trade rows.
-	const comfortable = budget >= DOCK_MIN_LIST_ROWS + DOCK_MIN_OUTPUT_ROWS;
-	const comfortableListRows = comfortable ? DOCK_MIN_LIST_ROWS : DOCK_MIN_PANE_ROWS;
-	const comfortableOutputRows = comfortable ? DOCK_MIN_OUTPUT_ROWS : DOCK_MIN_PANE_ROWS;
-	const maxListRows = budget - DOCK_MIN_PANE_ROWS;
-	const defaultListRows = clampToRange(
-		Math.ceil(budget * DOCK_DEFAULT_LIST_SHARE),
-		comfortableListRows,
-		budget - comfortableOutputRows,
-	);
-	const listRows = clampToRange(
-		requestedListRows ?? defaultListRows,
-		DOCK_MIN_PANE_ROWS,
-		maxListRows,
-	);
-	const outputRows = budget - listRows;
-
-	const listStart = DOCK_HEADER_ROWS;
-	const listEnd = listStart + listRows;
-	const handleIndex = listEnd;
-	const detailTitleIndex = handleIndex + DOCK_HANDLE_ROWS;
-	const metaStart = detailTitleIndex + detailTitleRows;
-	const ruleIndex = metaStart + metaRows;
-	const outputTitleIndex = ruleIndex + DOCK_RULE_ROWS;
-	const outputStart = outputTitleIndex + DOCK_OUTPUT_HEADER_ROWS;
-	const statusIndex = outputStart + outputRows;
+	const totalRows = clampToRange(options.totalRows ?? defaultTotalRows, DOCK_MIN_ROWS, maxTotalRows);
+	const viewportRows = totalRows - DOCK_CHROME_ROWS;
+	const viewportStart = DOCK_HEADER_ROWS;
+	const viewportEnd = viewportStart + viewportRows;
 
 	return {
-		listRows,
-		outputRows,
 		totalRows,
-		maxListRows,
-		defaultListRows,
-		metaRows,
-		detailTitleRows,
-		chromeRows,
-		minTotalRows,
+		viewportRows,
+		minTotalRows: DOCK_MIN_ROWS,
 		maxTotalRows,
 		capTotalRows,
+		defaultTotalRows,
 		maxHeightShare,
 		degraded,
 		headerRows: DOCK_HEADER_ROWS,
-		listStart,
-		listEnd,
-		handleIndex,
-		detailTitleIndex,
-		metaStart,
-		ruleIndex,
-		outputTitleIndex,
-		outputStart,
-		statusIndex,
+		viewportStart,
+		viewportEnd,
+		statusIndex: viewportEnd,
 	};
 }

@@ -19,8 +19,10 @@
  *   PI_BG_TASKS_MAX        finished tasks retained (default 100)
  *   PI_BG_KILL_GRACE_MS    SIGTERM→SIGKILL grace (default 3000)
  *   PI_BG_LOG_BYTES        model-visible log read cap (default 50000)
- *   PI_BG_DOCK_MAX_HEIGHT_SHARE  expanded dock height cap as a share of
- *                          terminal rows, 0.2..0.9 or "50%" (default 0.5)
+ *   PI_BG_DOCK_MAX_HEIGHT_SHARE  max height the expanded dock may be dragged
+ *                          to, as a share of terminal rows (0.2..1 or "100%";
+ *                          default 1 = the maximum the screen can give it).
+ *                          It still opens at 50% of the screen.
  *   PI_BASH_NICE_DISABLE   set to "1" to disable all nice wrapping (PRD-001)
  */
 
@@ -331,8 +333,8 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
-		// /tasks and /bg-tasks commands: expanded bottom view of all tasks,
-		// capped at PI_BG_DOCK_MAX_HEIGHT_SHARE of the terminal (default 50%).
+		// /tasks and /bg-tasks commands: expanded single-scroll page, opening at
+		// 50% of the terminal and draggable up to the maximum usable height.
 		let dockControllerRef: DockController | undefined;
 		let dockRef: ReturnType<typeof installDock> | undefined;
 
@@ -378,8 +380,8 @@ export default function (pi: ExtensionAPI) {
 			const controller = new DockController(
 				() => (registry ? registry.list().filter((task) => task.status === "running") : []),
 				() => (registry ? registry.list() : []),
-				// Height cap: the expanded dock never covers more than this share of
-				// the terminal (default 50%). Override with PI_BG_DOCK_MAX_HEIGHT_SHARE.
+				// Drag ceiling for the expanded panel (default 1 = maximum usable
+				// height). It still opens at 50%; set this to 0.5 to hard-cap it.
 				{ maxHeightShare: resolveDockMaxHeightShare(process.env.PI_BG_DOCK_MAX_HEIGHT_SHARE) },
 			);
 			dockControllerRef = controller;

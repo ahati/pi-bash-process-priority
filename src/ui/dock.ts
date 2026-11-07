@@ -1,42 +1,49 @@
 /**
- * Unified Background Tasks Dock & Master-Detail UI.
+ * Unified Background Tasks Dock & single-scroll task page.
  *
  * Implements:
- * 1. Compact 3-row clamped dock below editor for active running tasks.
- * 2. Unified Master-Detail screen for /tasks and task inspection:
- *    - Top: Master list of tasks with completion markers (✓, ●, ✗), duration, and task ID.
- *    - Bottom: Live Task Details group (Command, Status, Type, Started, Cwd, Log)
- *      and live scrollable Output tail for whichever task is currently selected.
+ * 1. Compact 3-row clamped dock below the editor for active running tasks.
+ * 2. Expanded task page for /tasks and task inspection: one sticky header,
+ *    one scroll window over the whole document (task list → selected-task
+ *    details → live output tail), and one fixed status row. The former
+ *    list/output split is gone: both panels scroll together as one page.
  * 3. Reactive selection tracking: moving the `>` cursor (↑/↓ or mouse click)
- *    immediately updates the details, Cwd, Log, and Output tail in real time.
+ *    rebinds the details and output section in real time.
+ * 4. The panel height is drag-resizable from the block grip on the top rule
+ *    (or `[` / `]`), from the 3-row floor up to the maximum the screen can
+ *    give it; it opens at half the terminal by default.
  */
 
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import type { TUI, TuiMouseEvent, TuiMouseEventResult } from "@earendil-works/pi-tui";
-import { isKeyRelease, isViewportTUI, Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
+import { isKeyRelease, isViewportTUI, Key, matchesKey } from "@earendil-works/pi-tui";
 
 import type { BgTask, TaskManagerApi } from "../types.ts";
 import {
 	dockRow,
-	formatCleanTaskRow,
 	formatDockStatusLine,
 	formatHeaderLine,
 	formatOutputStatusLine,
-	formatResizeHandle,
 	RULE_CHAR,
-	taskMetadataLines,
+	taskStatusIcon,
 } from "./format.ts";
 import {
 	clampToRange,
 	computeLayout,
-	DOCK_MIN_PANE_ROWS,
 	DOCK_TAIL_CACHE_SIZE,
 	resolveTermHeight,
 	type DockLayoutMetrics,
 } from "./dock-layout.ts";
+import { buildDockDocument } from "./dock-document.ts";
 import { boundedRead, DETAIL_TAIL_BYTES, toOutputLines } from "../log-reader.ts";
 import { debugLog } from "../debug.ts";
-import { disableTerminalMouse, enableTerminalMouse, parseMouseInput, type WritableTerminalHost } from "./terminal-mouse.ts";
+import {
+	disableTerminalMouse,
+	enableTerminalMouse,
+	parseMouseInput,
+	splitCoalescedMouseInput,
+	type WritableTerminalHost,
+} from "./terminal-mouse.ts";
 
 export const DOCK_WIDGET_KEY = "bg-tasks";
 export const MAX_DOCK_VISIBLE = 3;
@@ -50,8 +57,9 @@ export interface DockOptions {
 
 export interface DockControllerOptions {
 	/**
-	 * Height cap as a share of terminal rows (default 0.5). Set from
-	 * PI_BG_DOCK_MAX_HEIGHT_SHARE; clamped to 0.2–0.9.
+	 * Drag ceiling as a share of terminal rows (default 1 = the maximum usable
+	 * height). Set from PI_BG_DOCK_MAX_HEIGHT_SHARE; clamped to 0.2–1. Set it
+	 * to 0.5 to keep the old “never taller than half the screen” behavior.
 	 */
 	maxHeightShare?: number;
 }
@@ -66,18 +74,20 @@ export class DockController {
 	private view: "list" | "detail" = "list";
 	private detailTask: BgTask | undefined;
 
-	// Output log scroll state
-	private logScroll = 0;
-	private logFollow = true;
-	private logMaxScroll = 0;
+	// Single-scroll state for the expanded page.
+	private scrollTop = 0;
+	private scrollFollow = false;
+	private scrollMax = 0;
+	/** Document bounds from the latest render (selection reveal / anchoring). */
+	private docListCount = 0;
+	private docDetailsStart = 0;
+	/** `openDetail` asks the next render to anchor the window on the details. */
+	private pendingDetailsAnchor = false;
 
-	// PRD-007 Approach A: fixed two-panel layout state.
-	/** User-resized total widget height; undefined = derive from the height cap. */
+	/** User-resized total panel height; undefined = derive the 50% opening. */
 	private requestedTotalRows: number | undefined;
-	/** User-resized master-list pane height; undefined = derive the default split. */
-	private requestedListRows: number | undefined;
-	/** Active drag: which boundary, absolute screen Y, and the value at drag start. */
-	private dragOrigin: { kind: "split" | "height"; screenY: number; value: number } | undefined;
+	/** Active height drag: absolute screen Y + panel height at drag start. */
+	private dragOrigin: { screenY: number; totalRows: number } | undefined;
 	private readonly maxHeightShare: number | undefined;
 
 	constructor(
@@ -123,8 +133,7 @@ export class DockController {
 			this.index = 0;
 		}
 
-		this.logScroll = 0;
-		this.logFollow = true;
+		this.resetScroll();
 		this.reconcile();
 		return true;
 	}
@@ -133,10 +142,11 @@ export class DockController {
 		this.expanded = false;
 		this.view = "list";
 		this.detailTask = undefined;
+		this.resetScroll();
 		this.reconcile();
 	}
 
-	/** Detail view and expanded view are unified into the master-detail screen. */
+	/** Detail view and expanded view are unified into the single-scroll page. */
 	openDetail(task?: BgTask): void {
 		const all = this.getAllTasks();
 		const t = task ?? this.selected() ?? all[0];
@@ -148,16 +158,15 @@ export class DockController {
 		if (idx >= 0) {
 			this.index = idx;
 		}
-		this.logScroll = 0;
-		this.logFollow = false;
+		this.resetScroll();
+		this.pendingDetailsAnchor = true;
 	}
 
 	closeDetail(): void {
 		this.view = "list";
 		this.expanded = false;
 		this.detailTask = undefined;
-		this.logScroll = 0;
-		this.logFollow = false;
+		this.resetScroll();
 		this.reconcile();
 	}
 
@@ -188,45 +197,25 @@ export class DockController {
 	}
 
 	/**
-	 * Master-list rows for the current mode.
-	 * Compact mode caps at MAX_DOCK_VISIBLE; expanded mode returns the
-	 * effective pane size of the fixed two-panel layout (PRD-007 Approach A).
+	 * Compact dock list window is capped at MAX_DOCK_VISIBLE. The expanded page
+	 * has no list window any more — the whole list lives in the document.
 	 */
-	getMaxVisible(termHeight?: number): number {
-		if (!this.isExpanded()) {
-			return MAX_DOCK_VISIBLE;
-		}
-		return this.getLayoutMetrics(termHeight).listRows;
+	getMaxVisible(): number {
+		return MAX_DOCK_VISIBLE;
 	}
 
-	/** Fixed two-panel layout metrics (row boundaries, pane sizes) — PRD-007. */
+	/** Single-scroll layout metrics (panel height, scroll-window rows). */
 	getLayoutMetrics(termHeight?: number): DockLayoutMetrics {
-		return computeLayout(resolveTermHeight(termHeight), this.requestedListRows, {
+		return computeLayout(resolveTermHeight(termHeight), {
 			totalRows: this.requestedTotalRows,
 			maxHeightShare: this.maxHeightShare,
 		});
 	}
 
-	/** Effective output-tail rows in the expanded two-panel layout. */
-	getOutputRows(termHeight?: number): number {
-		return this.isExpanded() ? this.getLayoutMetrics(termHeight).outputRows : 0;
-	}
-
 	/**
-	 * Resize the master-list pane by `delta` rows (output pane absorbs the
-	 * difference). True when the pane size changed.
-	 */
-	resizeList(delta: number, termHeight?: number): boolean {
-		if (!this.isExpanded()) return false;
-		const metrics = this.getLayoutMetrics(termHeight);
-		return this.applyListRows((this.requestedListRows ?? metrics.listRows) + delta, metrics);
-	}
-
-	/**
-	 * Resize the whole widget by `delta` rows (the top block grip is the
-	 * widget's top edge). Clamped to [minTotalRows, maxTotalRows], i.e. the
-	 * height cap is the hard ceiling. The split ratio is preserved; the output
-	 * pane absorbs the change. True when the total changed.
+	 * Resize the whole panel by `delta` rows (the top block grip is the panel's
+	 * top edge). Clamped to [minTotalRows, maxTotalRows]: the floor keeps one
+	 * content row, the ceiling is the maximum the screen can give the panel.
 	 */
 	resizeTotal(delta: number, termHeight?: number): boolean {
 		if (!this.isExpanded()) return false;
@@ -234,25 +223,17 @@ export class DockController {
 		return this.applyTotalRows((this.requestedTotalRows ?? metrics.totalRows) + delta, termHeight);
 	}
 
-	/** Begin a mouse drag of the split handle row; rows derive from absolute screen Y. */
-	beginHandleDrag(screenY: number, termHeight?: number): void {
-		this.dragOrigin = { kind: "split", screenY, value: this.getLayoutMetrics(termHeight).listRows };
-	}
-
 	/** Begin a mouse drag of the top rule (height grip); absolute screen Y. */
 	beginHeightDrag(screenY: number, termHeight?: number): void {
-		this.dragOrigin = { kind: "height", screenY, value: this.getLayoutMetrics(termHeight).totalRows };
+		this.dragOrigin = { screenY, totalRows: this.getLayoutMetrics(termHeight).totalRows };
 	}
 
 	/** Track an active drag to a new absolute screen Y. True on change. */
 	dragHandleTo(screenY: number, termHeight?: number): boolean {
 		const origin = this.dragOrigin;
 		if (!origin) return false;
-		if (origin.kind === "height") {
-			// The grip is the top edge: dragging up (smaller screenY) grows the dock.
-			return this.applyTotalRows(origin.value + (origin.screenY - screenY), termHeight);
-		}
-		return this.applyListRows(origin.value + (screenY - origin.screenY), this.getLayoutMetrics(termHeight));
+		// The grip is the top edge: dragging up (smaller screenY) grows the panel.
+		return this.applyTotalRows(origin.totalRows + (origin.screenY - screenY), termHeight);
 	}
 
 	endHandleDrag(): void {
@@ -263,34 +244,15 @@ export class DockController {
 		return this.dragOrigin !== undefined;
 	}
 
-	/** True when the active drag moves the whole widget rather than the split. */
-	isHeightDragActive(): boolean {
-		return this.dragOrigin?.kind === "height";
-	}
-
-	private applyListRows(next: number, metrics: DockLayoutMetrics): boolean {
-		const clamped = clampToRange(next, DOCK_MIN_PANE_ROWS, metrics.maxListRows);
-		if (clamped === metrics.listRows) return false;
-		this.requestedListRows = clamped;
-		// Keep the list window consistent with the new pane size.
-		const maxOffset = Math.max(0, this.getTasks().length - clamped);
-		if (this.listOffset > maxOffset) this.listOffset = maxOffset;
-		return true;
-	}
-
 	private applyTotalRows(next: number, termHeight?: number): boolean {
 		const current = this.getLayoutMetrics(termHeight);
 		const clamped = clampToRange(next, current.minTotalRows, current.maxTotalRows);
 		if (clamped === current.totalRows) return false;
-		// The first height resize pins the current split so subsequent height
-		// changes are absorbed by the output pane, not the task list.
-		if (this.requestedListRows === undefined) this.requestedListRows = current.listRows;
 		this.requestedTotalRows = clamped;
-		// The list offset must follow the new pane height; the stored split is
-		// left untouched so growing the dock restores the user's ratio.
-		const updated = this.getLayoutMetrics(termHeight);
-		const maxOffset = Math.max(0, this.getTasks().length - updated.listRows);
-		if (this.listOffset > maxOffset) this.listOffset = maxOffset;
+		// The scroll window changed size; keep the offset (or follow) in range.
+		this.scrollTop = this.scrollFollow
+			? this.scrollMax
+			: Math.max(0, Math.min(this.scrollTop, this.scrollMax));
 		return true;
 	}
 
@@ -305,12 +267,7 @@ export class DockController {
 		this.active = true;
 		if (fromBottom && tasks.length > 0) {
 			this.index = tasks.length - 1;
-			const maxVisible = this.getMaxVisible();
-			if (this.index >= maxVisible) {
-				this.listOffset = this.index - maxVisible + 1;
-			} else {
-				this.listOffset = 0;
-			}
+			this.scrollDocumentBottom();
 		}
 		return true;
 	}
@@ -334,70 +291,130 @@ export class DockController {
 			return;
 		}
 		const prevIndex = this.index;
-		const maxVisible = this.getMaxVisible(termHeight);
 		this.index = Math.max(0, Math.min(count - 1, this.index + delta));
 
-		if (this.index < this.listOffset) {
-			this.listOffset = this.index;
-		} else if (this.index >= this.listOffset + maxVisible) {
-			this.listOffset = this.index - maxVisible + 1;
+		if (!this.isExpanded()) {
+			// Compact dock: keep the selection inside the 3-row window.
+			if (this.index < this.listOffset) {
+				this.listOffset = this.index;
+			} else if (this.index >= this.listOffset + MAX_DOCK_VISIBLE) {
+				this.listOffset = this.index - MAX_DOCK_VISIBLE + 1;
+			}
 		}
 
 		if (this.index !== prevIndex) {
 			this.detailTask = tasks[this.index];
-			this.logScroll = 0;
-			this.logFollow = true;
+			if (this.isExpanded()) this.revealSelected(termHeight);
 		}
 	}
 
-	scrollList(delta: number, termHeight?: number): void {
+	/** Compact-dock list scrolling (the expanded page scrolls its document). */
+	scrollList(delta: number): void {
 		const count = this.getTasks().length;
-		const maxVisible = this.getMaxVisible(termHeight);
-		if (count <= maxVisible) return;
-		const maxOffset = Math.max(0, count - maxVisible);
+		if (count <= MAX_DOCK_VISIBLE) return;
+		const maxOffset = Math.max(0, count - MAX_DOCK_VISIBLE);
 		this.listOffset = Math.max(0, Math.min(maxOffset, this.listOffset + delta));
 
 		if (this.index < this.listOffset) {
 			this.index = this.listOffset;
-		} else if (this.index >= this.listOffset + maxVisible) {
-			this.index = this.listOffset + maxVisible - 1;
+		} else if (this.index >= this.listOffset + MAX_DOCK_VISIBLE) {
+			this.index = this.listOffset + MAX_DOCK_VISIBLE - 1;
 		}
 	}
 
-	getListOffset(termHeight?: number): number {
+	getListOffset(): number {
 		const count = this.getTasks().length;
-		const maxVisible = this.getMaxVisible(termHeight);
-		const maxOffset = Math.max(0, count - maxVisible);
+		const maxOffset = Math.max(0, count - MAX_DOCK_VISIBLE);
 		return Math.max(0, Math.min(maxOffset, this.listOffset));
 	}
 
-	scrollDetail(delta: number): void {
-		this.logFollow = false;
-		this.logScroll = Math.max(0, Math.min(this.logMaxScroll, this.logScroll + delta));
-		if (this.logScroll >= this.logMaxScroll) {
-			this.logFollow = true;
+	// ── Single scroll (expanded page) ────────────────────────────────────────
+
+	/** Document bounds from the latest render, used for reveal/anchor rules. */
+	setDocumentBounds(listCount: number, detailsStart: number): void {
+		this.docListCount = Math.max(0, listCount);
+		this.docDetailsStart = Math.max(0, detailsStart);
+	}
+
+	/**
+	 * Called by the renderer after building the document: `openDetail` anchors
+	 * the window on the newly selected task's details instead of the list.
+	 */
+	applyPendingAnchor(): void {
+		if (!this.pendingDetailsAnchor) return;
+		this.pendingDetailsAnchor = false;
+		this.scrollTop = this.docDetailsStart;
+		this.scrollFollow = false;
+	}
+
+	/** Called by the renderer after building the document. */
+	setScrollMax(max: number): void {
+		this.scrollMax = Math.max(0, max);
+		if (this.scrollFollow) {
+			this.scrollTop = this.scrollMax;
+		} else {
+			this.scrollTop = Math.max(0, Math.min(this.scrollTop, this.scrollMax));
 		}
 	}
 
-	scrollDetailTop(): void {
-		this.logFollow = false;
-		this.logScroll = 0;
+	getScroll(): { top: number; follow: boolean; max: number } {
+		return { top: this.scrollTop, follow: this.scrollFollow, max: this.scrollMax };
 	}
 
-	scrollDetailBottom(): void {
-		this.logFollow = true;
-		this.logScroll = this.logMaxScroll;
+	/** Scroll the whole document by `delta` rows. Reaching the end re-follows. */
+	scrollDocument(delta: number): void {
+		this.scrollFollow = false;
+		this.scrollTop = Math.max(0, Math.min(this.scrollMax, this.scrollTop + delta));
+		if (this.scrollTop >= this.scrollMax) {
+			this.scrollFollow = true;
+		}
 	}
 
-	setMaxScroll(max: number): void {
-		this.logMaxScroll = Math.max(0, max);
+	/** Page scroll using the current viewport height. */
+	scrollDocumentPage(delta: number, termHeight?: number): void {
+		const page = Math.max(1, this.getLayoutMetrics(termHeight).viewportRows - 1);
+		this.scrollDocument(delta * page);
 	}
 
-	getDetailScroll(): { scroll: number; follow: boolean } {
-		return { scroll: this.logScroll, follow: this.logFollow };
+	scrollDocumentTop(): void {
+		this.scrollFollow = false;
+		this.scrollTop = 0;
 	}
 
-	reconcile(termHeight?: number): void {
+	scrollDocumentBottom(): void {
+		this.scrollFollow = true;
+		this.scrollTop = this.scrollMax;
+	}
+
+	private resetScroll(): void {
+		this.scrollTop = 0;
+		this.scrollFollow = false;
+		this.scrollMax = 0;
+		this.pendingDetailsAnchor = false;
+	}
+
+	/**
+	 * Selection reveal/anchor rule: while the window is over the list, scroll
+	 * minimally to keep the selected task visible; while it is over the details
+	 * or output, jump to the top of the newly selected task's detail section so
+	 * stale output never stays on screen. Tail-follow is preserved.
+	 */
+	private revealSelected(termHeight?: number): void {
+		if (this.scrollFollow) return;
+		const viewportRows = this.getLayoutMetrics(termHeight).viewportRows;
+		if (this.scrollTop < this.docListCount) {
+			if (this.index < this.scrollTop) {
+				this.scrollTop = this.index;
+			} else if (this.index >= this.scrollTop + viewportRows) {
+				this.scrollTop = this.index - viewportRows + 1;
+			}
+		} else {
+			this.scrollTop = this.docDetailsStart;
+		}
+		this.scrollTop = Math.max(0, Math.min(this.scrollTop, this.scrollMax));
+	}
+
+	reconcile(): void {
 		if (this.view === "detail") {
 			if (this.detailTask) {
 				const updated = this.getAllTasks().find((t) => t.id === this.detailTask?.id);
@@ -411,11 +428,15 @@ export class DockController {
 			this.expanded = false;
 			this.index = 0;
 			this.listOffset = 0;
+			this.resetScroll();
 		} else {
 			if (this.index >= count) this.index = count - 1;
-			const maxVisible = this.getMaxVisible(termHeight);
-			const maxOffset = Math.max(0, count - maxVisible);
-			if (this.listOffset > maxOffset) this.listOffset = maxOffset;
+			if (this.isExpanded()) {
+				this.scrollTop = Math.max(0, Math.min(this.scrollTop, this.scrollMax));
+			} else {
+				const maxOffset = Math.max(0, count - MAX_DOCK_VISIBLE);
+				if (this.listOffset > maxOffset) this.listOffset = maxOffset;
+			}
 		}
 	}
 }
@@ -425,6 +446,32 @@ interface DockWidget {
 	invalidate(): void;
 	dispose?(): void;
 	handleMouse?(event: TuiMouseEvent): TuiMouseEventResult | undefined;
+}
+
+/**
+ * pi-tui 1.5.0 workaround: its viewport input parser only accepts a chunk that
+ * is exactly one SGR mouse sequence. Terminals coalesce fast drag motion into
+ * a single stdin read, so most drag reports were dropped and dragging felt
+ * unresponsive. Split such chunks before the parser sees them.
+ *
+ * Returns a restore function (or undefined when the host exposes no hook).
+ */
+function installMouseInputSplitter(tui: TUI): (() => void) | undefined {
+	const host = tui as unknown as { handleTerminalInput?: (data: string) => void };
+	const original = host.handleTerminalInput;
+	if (typeof original !== "function") return undefined;
+	const wrapped = (data: string): void => {
+		const parts = splitCoalescedMouseInput(data);
+		if (parts.length === 1) {
+			original.call(host, data);
+			return;
+		}
+		for (const part of parts) original.call(host, part);
+	};
+	host.handleTerminalInput = wrapped;
+	return () => {
+		if (host.handleTerminalInput === wrapped) delete host.handleTerminalInput;
+	};
 }
 
 export function installDock(
@@ -438,6 +485,9 @@ export function installDock(
 	let disposed = false;
 	let capturedTui: { requestRender(): void } | undefined;
 	let widgetInstalled = false;
+	/** pi-tui input-chunk splitter (installed once per TUI instance). */
+	let splitterTui: TUI | undefined;
+	let restoreSplitter: (() => void) | undefined;
 
 	const requestRender = (): void => {
 		(capturedTui ?? options.getTui?.())?.requestRender();
@@ -516,6 +566,11 @@ export function installDock(
 
 	const factory = (tui: TUI, theme: Theme): DockWidget => {
 		capturedTui = tui;
+		if (splitterTui !== tui) {
+			restoreSplitter?.();
+			splitterTui = tui;
+			restoreSplitter = installMouseInputSplitter(tui);
+		}
 		const component: DockWidget = {
 			invalidate() {},
 			render(width: number): string[] {
@@ -529,137 +584,69 @@ export function installDock(
 				const termHeight = resolveTermHeight(tui?.terminal?.rows);
 
 				// ===================================================================
-				// Unified Master-Detail View (/tasks or detail)
-				// Fixed two-panel layout — PRD-007 Approach A: every section is
-				// pinned to a fixed row offset; the widget's total height is a pure
-				// function of (termHeight, user-resized list pane), never of the
-				// selection, task count, or output volume.
+				// Expanded single-scroll page (/tasks or detail)
+				// One sticky header, one scroll window over the whole document
+				// (list → details → output), one fixed status row. The total height
+				// is a pure function of (termHeight, user-dragged height).
 				// ===================================================================
 				if (controller.isExpanded()) {
 					const metrics = controller.getLayoutMetrics(termHeight);
-					const listRows = metrics.listRows;
-					const offset = controller.getListOffset(termHeight);
-					const visibleTasks = all.slice(offset, offset + listRows);
-					const rawSelected = controller.selectedIndex();
-					const selectedIndex =
-						rawSelected >= 0 ? Math.min(rawSelected, count - 1) : Math.min(offset, count - 1);
-
-					const lines: string[] = [];
-
-					// 1. Header rule with task count + list window indicator. The block
-					// grip (▬▬▬▬) on this rule is the drag target for the widget's total
-					// height (idea 2); it shrinks with the available width.
-					const visibleCount = Math.min(count - offset, listRows);
-					const windowed = count > listRows || offset > 0;
-					const hint = windowed
-						? `${count} task${count === 1 ? "" : "s"} · ${offset + 1}–${offset + visibleCount} of ${count}`
-						: `${count} task${count === 1 ? "" : "s"}`;
-					lines.push(
-						formatHeaderLine("Background Tasks", width, theme, hint, borderColorFn, { grip: true }),
-					);
-
-					// 2. Subtitle (fixed row 2)
-					lines.push(theme ? theme.fg("dim", "current session branch") : "current session branch");
-
-					// 3. Blank separator (fixed row 3)
-					lines.push("");
-
-					// 4. Master list — always exactly listRows rows. Blank pad rows
-					// keep the details pane at a fixed vertical offset.
-					for (let i = 0; i < listRows; i++) {
-						const taskIndex = offset + i;
-						const task = visibleTasks[i];
-						const isSelected = taskIndex === selectedIndex;
-						lines.push(task ? formatCleanTaskRow(task, isSelected, width, now, theme) : "");
-					}
-
-					// 5. Resize handle (fixed single row; drag or +/- to resize)
-					lines.push(formatResizeHandle(width, theme));
-
-					// 6. Task Details title (hidden when the metadata group collapses)
-					if (metrics.detailTitleRows > 0) {
-						lines.push(theme?.bold ? theme.bold("Task Details") : "Task Details");
-					}
-
-					// 7. Metadata group — exactly `metrics.metaRows` rows (0 when the
-					// height cap forces the group out; padded when the task has no
-					// Cwd/Log).
+					const selectedIndex = Math.max(0, Math.min(count - 1, controller.selectedIndex()));
 					const activeTask = all[selectedIndex];
-					const meta =
-						activeTask && metrics.metaRows > 0
-							? taskMetadataLines(activeTask, width, now, { theme, showMetadata: false })
-							: [];
-					for (let i = 0; i < metrics.metaRows; i++) {
-						lines.push(meta[i] ?? "");
-					}
 
-					// 8. Divider rule
-					const rule = (borderColorFn ?? ((t: string) => theme.fg("dim", t)))(
-						RULE_CHAR.repeat(Math.max(1, width)),
-					);
-					lines.push(rule);
-
-					// 9. Output header
-					lines.push("Output");
-					lines.push("");
-
-					// 10. Output tail — always exactly outputRows rows. The per-task
-					// tail cache (PRD-007 G2) keeps content stable across selection
-					// changes while the async read is in flight.
-					const entry = activeTask && activeTask.logPath ? tailCache.get(activeTask.id) : undefined;
+					const entry = activeTask?.logPath ? tailCache.get(activeTask.id) : undefined;
 					if (activeTask && !entry && activeTask.logPath) {
 						void refreshDockTail(activeTask);
 					}
-					const outputLines = entry?.lines ?? [];
-					const outputRows = metrics.outputRows;
 
-					const totalLines = outputLines.length;
-					const maxScroll = Math.max(0, totalLines - outputRows);
-					controller.setMaxScroll(maxScroll);
+					// The whole body is one document: task list → details → output.
+					const doc = buildDockDocument({
+						tasks: all,
+						selectedIndex,
+						width,
+						nowMs: now,
+						theme,
+						borderColorFn,
+						outputLines: entry?.lines ?? [],
+					});
+					controller.setDocumentBounds(doc.listCount, doc.detailsStart);
+					controller.applyPendingAnchor();
+					const maxScroll = Math.max(0, doc.lines.length - metrics.viewportRows);
+					controller.setScrollMax(maxScroll);
+					const scroll = controller.getScroll();
+					const start = Math.min(scroll.top, maxScroll);
 
-					const scrollInfo = controller.getDetailScroll();
-					let startLine = 0;
-					if (scrollInfo.follow || totalLines <= outputRows) {
-						startLine = Math.max(0, totalLines - outputRows);
-					} else {
-						startLine = Math.min(scrollInfo.scroll, maxScroll);
-					}
+					// 1. Sticky header: title, block grip (▬▬▬▬) for the height drag, and
+					// the selected task so orientation survives deep scrolling.
+					const selection = activeTask
+						? `${taskStatusIcon(activeTask, theme)} ${activeTask.id} ${activeTask.status}`
+						: "";
+					const hint = `${count} task${count === 1 ? "" : "s"}${selection ? ` · ${selection}` : ""}`;
+					const lines: string[] = [
+						formatHeaderLine("Background Tasks", width, theme, hint, borderColorFn, { grip: true }),
+					];
 
-					const slice = outputLines.slice(startLine, startLine + outputRows);
-					const outputStart = lines.length;
-					if (slice.length === 0) {
-						lines.push(theme.fg("dim", "(no output yet)"));
-					} else {
-						for (const line of slice) {
-							lines.push(truncateToWidth(line, width));
-						}
-					}
-					while (lines.length - outputStart < outputRows) {
-						lines.push("");
-					}
+					// 2. The scroll window. Blank pad rows keep the panel height fixed.
+					lines.push(...doc.lines.slice(start, start + metrics.viewportRows));
+					while (lines.length - 1 < metrics.viewportRows) lines.push("");
 
-					// 11. Interactive hint line (fixed final row). Log-scroll keys are
-					// mode-dependent: fullscreen pi binds PageUp/PageDown to the
-					// transcript scroller (alt-screen consumes them before extension
-					// input listeners), so there the log scrolls with Home/End;
-					// regular mode has no viewport handler and PgUp/PgDn reach the
-					// dock's raw input path. (e2e finding, PRD-007 §11.)
-					const logScrollKeys = tui && isViewportTUI(tui) ? "Home/End log" : "PgUp/PgDn log";
+					// 3. Status row: window position + adaptive key hints.
 					const statusText = formatOutputStatusLine({
-						follow: scrollInfo.follow,
-						totalLines,
-						scrollTop: startLine,
-						visibleLines: outputRows,
+						follow: scroll.follow,
+						totalLines: doc.lines.length,
+						scrollTop: start,
+						visibleLines: metrics.viewportRows,
 						bytesRead: entry?.bytesRead ?? 0,
 						totalBytes: entry?.totalBytes ?? 0,
 						truncated: entry?.truncated ?? false,
 					});
+					const scrollKeys = tui && isViewportTUI(tui) ? "Home/End jump" : "PgUp/PgDn scroll";
 					lines.push(
 						theme.fg(
 							"dim",
 							formatDockStatusLine(
 								statusText,
-								["↑/↓ select", "+/- resize", "[/] height", logScrollKeys, "k kill", "esc close"],
+								["↑/↓ select", scrollKeys, "[/] height", "k kill", "esc close"],
 								width,
 							),
 						),
@@ -676,7 +663,7 @@ export function installDock(
 
 				const maxVisible = MAX_DOCK_VISIBLE;
 				const visibleCount = Math.min(runningTasks.length, maxVisible);
-				const offset = controller.getListOffset(termHeight);
+				const offset = controller.getListOffset();
 				const visibleRunning = runningTasks.slice(offset, offset + visibleCount);
 				const selectedIndex = controller.selectedIndex();
 
@@ -730,17 +717,10 @@ export function installDock(
 					const delta = (event.wheelDelta ?? 0) !== 0 ? (event.wheelDelta! > 0 ? 1 : -1) : 0;
 					if (delta !== 0) {
 						if (controller.isExpanded()) {
-							// Wheel scrolls the region it is over (PRD-007: wheel
-							// scrolls, arrows select); boundaries come from the
-							// layout metrics, not literals.
-							const y = event.y ?? 0;
-							if (y >= metrics.listStart && y < metrics.listEnd) {
-								controller.scrollList(delta, termHeight);
-							} else {
-								controller.scrollDetail(delta * 2);
-							}
+							// One scroll dimension: the whole document moves.
+							controller.scrollDocument(delta * 3);
 						} else {
-							controller.scrollList(delta, termHeight);
+							controller.scrollList(delta);
 						}
 						requestRender();
 						return { handled: true };
@@ -748,7 +728,7 @@ export function installDock(
 				}
 
 				// Top rule = height grip: press captures, vertical drag resizes the
-				// whole widget (the grip is the top edge, so dragging up grows it).
+				// whole panel (the grip is the top edge, so dragging up grows it).
 				// Only viewport (fullscreen) TUIs dispatch widget mouse events;
 				// regular mode uses the [/] keyboard fallback.
 				if (
@@ -761,29 +741,18 @@ export function installDock(
 					return { handled: true, capture: true };
 				}
 
-				// Resize handle: press starts a drag; capture routes the following
-				// drag/release events back here even outside the widget bounds.
-				if (
-					event.type === "press" &&
-					event.button === "left" &&
-					controller.isExpanded() &&
-					(event.y ?? -1) === metrics.handleIndex
-				) {
-					controller.beginHandleDrag(event.screenY, termHeight);
-					return { handled: true, capture: true };
-				}
-
 				if (event.type === "click") {
 					const all = controller.getTasks();
 					const y = event.y ?? 0;
 					if (controller.isExpanded()) {
-						// Only clicks on actual list rows select a task; pad rows,
-						// the handle row, and the detail/output panes are inert.
-						if (y >= metrics.listStart && y < metrics.listEnd) {
-							const offset = controller.getListOffset(termHeight);
-							const clickedIndex = offset + (y - metrics.listStart);
-							if (clickedIndex >= 0 && clickedIndex < all.length) {
-								controller.expandTasks(all[clickedIndex].id);
+						// Map the clicked widget row to a document row; only the list at
+						// the top of the document is selectable.
+						const scroll = controller.getScroll();
+						const start = Math.min(scroll.top, scroll.max);
+						if (y >= metrics.viewportStart && y < metrics.viewportEnd) {
+							const docRow = start + (y - metrics.viewportStart);
+							if (docRow >= 0 && docRow < all.length) {
+								controller.expandTasks(all[docRow].id);
 								requestRender();
 								return { handled: true };
 							}
@@ -795,7 +764,7 @@ export function installDock(
 					// past the visible rows no longer select hidden tasks).
 					const visibleCount = Math.min(all.length, MAX_DOCK_VISIBLE);
 					if (y >= 0 && y < visibleCount) {
-						const offset = controller.getListOffset(termHeight);
+						const offset = controller.getListOffset();
 						const clickedIndex = offset + y;
 						if (clickedIndex >= 0 && clickedIndex < all.length) {
 							controller.expandTasks(all[clickedIndex].id);
@@ -841,6 +810,9 @@ export function installDock(
 	function dispose(): void {
 		disposed = true;
 		widgetInstalled = false;
+		restoreSplitter?.();
+		restoreSplitter = undefined;
+		splitterTui = undefined;
 		disableTerminalMouse((capturedTui ?? options.getTui?.()) as unknown as WritableTerminalHost);
 		stopTicker();
 		unsubscribe();
@@ -921,13 +893,14 @@ export function handleDockInput(
 		// unknown. PgUp/PgDn remain the log-scroll path in regular mode.
 		if (tui && isViewportTUI(tui)) return undefined;
 		if (mouse.wheelDelta !== 0) {
-			if (controller.isDetail?.()) {
-				controller.scrollDetail?.(mouse.wheelDelta * 2);
+			if (controller.isExpanded?.()) {
+				// Expanded page: one scroll dimension over the whole document.
+				controller.scrollDocument?.(mouse.wheelDelta * 3);
 				tui?.requestRender();
 				return { consume: true };
 			}
-			if (controller.inDock() || controller.isExpanded()) {
-				controller.scrollList?.(mouse.wheelDelta, tui?.terminal?.rows);
+			if (controller.inDock()) {
+				controller.scrollList?.(mouse.wheelDelta);
 				tui?.requestRender();
 				return { consume: true };
 			}
@@ -1039,24 +1012,24 @@ export function handleDockInput(
 		}
 	}
 
-	// Output log scrolling via PgUp / PgDn / Home / End
+	// Single document scrolling via PgUp / PgDn / Home / End
 	if (isPageUpKey(data)) {
-		controller.scrollDetail?.(-10);
+		controller.scrollDocumentPage?.(-1, tui?.terminal?.rows);
 		tui?.requestRender();
 		return { consume: true };
 	}
 	if (isPageDownKey(data)) {
-		controller.scrollDetail?.(10);
+		controller.scrollDocumentPage?.(1, tui?.terminal?.rows);
 		tui?.requestRender();
 		return { consume: true };
 	}
 	if (isHomeKey(data)) {
-		controller.scrollDetailTop?.();
+		controller.scrollDocumentTop?.();
 		tui?.requestRender();
 		return { consume: true };
 	}
 	if (isEndKey(data)) {
-		controller.scrollDetailBottom?.();
+		controller.scrollDocumentBottom?.();
 		tui?.requestRender();
 		return { consume: true };
 	}
@@ -1104,27 +1077,14 @@ export function handleDockInput(
 		return { consume: true };
 	}
 
-	// +/- (or =/_) resizes the master-list pane of the fixed two-panel layout
-	// (PRD-007 Approach A); the output pane absorbs the difference.
-	if (data === "+" || data === "=") {
-		controller.resizeList?.(1, tui?.terminal?.rows);
-		tui?.requestRender();
-		return { consume: true };
-	}
-	if (data === "-" || data === "_") {
-		controller.resizeList?.(-1, tui?.terminal?.rows);
-		tui?.requestRender();
-		return { consume: true };
-	}
-
-	// ] / [ resize the whole widget between its floor and the 50% height cap
-	// (the keyboard equivalent of dragging the block grip on the top rule).
-	if (data === "]") {
+	// +/- (or =/_) and ]/[ resize the whole panel between its floor and the
+	// maximum usable height (keyboard equivalent of dragging the top grip).
+	if (data === "+" || data === "=" || data === "]") {
 		controller.resizeTotal?.(1, tui?.terminal?.rows);
 		tui?.requestRender();
 		return { consume: true };
 	}
-	if (data === "[") {
+	if (data === "-" || data === "_" || data === "[") {
 		controller.resizeTotal?.(-1, tui?.terminal?.rows);
 		tui?.requestRender();
 		return { consume: true };

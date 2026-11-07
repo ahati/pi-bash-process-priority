@@ -182,7 +182,7 @@ test("detail mode navigation: enter opens detail, up/down moves task selection, 
 			selectedIdx += delta;
 			dock.recorded.push(delta === -1 ? "up" : "down");
 		},
-		scrollDetail: (d: number) => {
+		scrollDocumentPage: (d: number) => {
 			detailScrolled.push(d);
 		},
 	});
@@ -209,9 +209,9 @@ test("detail mode navigation: enter opens detail, up/down moves task selection, 
 
 	// PgUp / PgDn scrolls log
 	editor.handleInput("\u001b[5~"); // PgUp
-	assert.deepEqual(detailScrolled, [-10]);
+	assert.deepEqual(detailScrolled, [-1]);
 	editor.handleInput("\u001b[6~"); // PgDn
-	assert.deepEqual(detailScrolled, [-10, 10]);
+	assert.deepEqual(detailScrolled, [-1, 1]);
 
 	// In detail mode: esc closes detail and exits
 	editor.handleInput("\x1b");

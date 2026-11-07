@@ -7,6 +7,34 @@ export const DISABLE_TERMINAL_MOUSE = "\x1b[?1006l\x1b[?1004l\x1b[?1003l\x1b[?10
 
 const SGR_MOUSE_RE = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/g;
 
+/**
+ * Split one stdin chunk into single SGR mouse sequences.
+ *
+ * pi-tui 1.5.0's viewport parser only accepts a chunk that is *exactly* one
+ * SGR sequence (`/^\x1b\[<...$/`). A fast mouse drag makes the terminal
+ * coalesce several motion reports into one read; the parser then rejects the
+ * whole chunk and the moves are silently dropped, which is why dragging felt
+ * unresponsive. Splitting the chunk restores one event per dispatch.
+ *
+ * Returns `[data]` unchanged when the chunk holds fewer than two sequences.
+ */
+export function splitCoalescedMouseInput(data: string): string[] {
+	const sequences = [...data.matchAll(SGR_MOUSE_RE)];
+	if (sequences.length === 0) return [data];
+	// A single sequence that already fills the chunk is the common case.
+	if (sequences.length === 1 && sequences[0][0] === data) return [data];
+	const parts: string[] = [];
+	let last = 0;
+	for (const match of sequences) {
+		const start = match.index ?? 0;
+		if (start > last) parts.push(data.slice(last, start));
+		parts.push(match[0]);
+		last = start + match[0].length;
+	}
+	if (last < data.length) parts.push(data.slice(last));
+	return parts.filter((part) => part.length > 0);
+}
+
 export interface ParsedMousePoint {
 	/** Zero-based column. */
 	x: number;
