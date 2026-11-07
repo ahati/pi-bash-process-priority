@@ -208,34 +208,49 @@ test("DockController: expanded mode uses the fixed two-panel layout (PRD-007 App
 	assert.equal(controller.getMaxVisible(30), 3);
 
 	// 2. /tasks expanded mode: all tasks (running, completed, failed).
-	// 30 rows: available = 30 - 6 reserve = 24; budget for L+O = 24 - 15
-	// fixed = 9; default L = ceil(9 * 0.35) = 4, O = 5.
+	// 30 rows: the 50% cap allows 15 rows. Metadata flexes to 2 rows, chrome
+	// is 11, the pane budget is 4 → default L = ceil(4 * 0.35) = 2, O = 2.
 	assert.equal(controller.expandTasks(), true);
 	assert.equal(controller.isExpanded(), true);
 	assert.equal(controller.getTasks().length, 3);
-	assert.equal(controller.getMaxVisible(30), 4);
-	assert.equal(controller.getOutputRows(30), 5);
+	assert.equal(controller.getMaxVisible(30), 2);
+	assert.equal(controller.getOutputRows(30), 2);
 	const metrics = controller.getLayoutMetrics(30);
-	assert.equal(metrics.totalRows, 24); // 15 fixed + 4 list + 5 output
+	assert.equal(metrics.totalRows, 15);
+	assert.equal(metrics.totalRows, Math.floor(30 * 0.5));
+	assert.equal(metrics.metaRows, 2);
 	assert.equal(metrics.listStart, 3);
-	assert.equal(metrics.handleIndex, 7);
-	assert.equal(metrics.listEnd, 7);
-	assert.equal(metrics.statusIndex, 23);
+	assert.equal(metrics.handleIndex, 5);
+	assert.equal(metrics.listEnd, 5);
+	assert.equal(metrics.statusIndex, 14);
 
 	// 3. Resize: +/- moves rows between the panes within the clamps.
 	assert.equal(controller.resizeList(1, 30), true);
-	assert.equal(controller.getMaxVisible(30), 5);
-	assert.equal(controller.getOutputRows(30), 4);
-	assert.equal(controller.resizeList(99, 30), false); // already at maxListRows
-	assert.equal(controller.getMaxVisible(30), 5);
-	assert.equal(controller.resizeList(-99, 30), true); // clamps at min
 	assert.equal(controller.getMaxVisible(30), 3);
-	assert.equal(controller.getOutputRows(30), 6);
+	assert.equal(controller.getOutputRows(30), 1);
+	assert.equal(controller.resizeList(99, 30), false); // already at maxListRows
+	assert.equal(controller.getMaxVisible(30), 3);
+	assert.equal(controller.resizeList(-99, 30), true); // clamps at min
+	assert.equal(controller.getMaxVisible(30), 1);
+	assert.equal(controller.getOutputRows(30), 3);
 
-	// 4. Degenerate small terminal: minimum panes, degraded flag.
-	assert.equal(controller.getMaxVisible(24), 3);
-	assert.equal(controller.getOutputRows(24), 4);
-	assert.equal(controller.getLayoutMetrics(24).degraded, true);
+	// 4. Small terminal: the 50% cap still holds (fresh controller → default
+	// split); below the pane floor the layout degrades and takes its minimum.
+	const smallTasks = [
+		makeTask({ id: "task-1", status: "running" }),
+		makeTask({ id: "task-2", status: "completed", exitCode: 0 }),
+	];
+	const small = new DockController(
+		() => smallTasks.filter((t) => t.status === "running"),
+		() => smallTasks,
+	);
+	small.expandTasks();
+	assert.equal(small.getLayoutMetrics(24).degraded, false);
+	assert.equal(small.getLayoutMetrics(24).totalRows, 12);
+	assert.equal(small.getMaxVisible(24), 2);
+	assert.equal(small.getOutputRows(24), 2);
+	assert.equal(small.getLayoutMetrics(16).degraded, true);
+	assert.equal(small.getLayoutMetrics(16).totalRows, 10);
 
 	// 5. ESC / collapseTasks returns to normal reduced-list view
 	controller.collapseTasks();
@@ -323,16 +338,17 @@ test("merged Master-Detail screen renders master list, details (with Cwd and Log
 		fg: (_c: string, t: string) => `\x1b[34m${t}\x1b[39m`,
 		bold: (t: string) => `\x1b[1m${t}\x1b[22m`,
 	};
-	const widget = widgetFactory({ terminal: { rows: 30 }, requestRender() {} }, theme);
+	const widget = widgetFactory({ terminal: { rows: 60 }, requestRender() {} }, theme);
 	const lines = widget.render(140);
 
 	// 1. Header with count hint + subtitle (PRD-007: count moved to the rule)
 	assert.ok(lines.some((l: string) => l.includes("Background Tasks") && l.includes("2 tasks")));
 	assert.ok(lines.some((l: string) => l.includes("current session branch")));
 
-	// Fixed two-panel geometry: 30 rows → 3 header + 4 list + 1 handle
-	// + 1 title + 6 meta + 1 rule + 2 output header + 5 output + 1 status.
-	const metrics = controller.getLayoutMetrics(30);
+	// Fixed two-panel geometry at 60 rows: 30 rows total (50% cap) →
+	// 3 header + 6 list + 1 handle + 1 title + 6 meta + 1 rule + 2 output
+	// header + 9 output + 1 status.
+	const metrics = controller.getLayoutMetrics(60);
 	assert.equal(lines.length, metrics.totalRows);
 	assert.ok(lines.some((l: string) => l.includes("drag or +/- to resize")));
 
@@ -394,7 +410,7 @@ test("reactive selection change: moving index updates Command, Cwd, Log, and Out
 		fg: (_c: string, t: string) => `\x1b[34m${t}\x1b[39m`,
 		bold: (t: string) => `\x1b[1m${t}\x1b[22m`,
 	};
-	const widget = widgetFactory({ terminal: { rows: 30 }, requestRender() {} }, theme);
+	const widget = widgetFactory({ terminal: { rows: 60 }, requestRender() {} }, theme);
 
 	// Initially task 1 selected
 	let lines = widget.render(100);

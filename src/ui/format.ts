@@ -14,6 +14,14 @@ export const STILL_RUNNING_BULLET = "○";
 export const RULE_CHAR = "─";
 export const SEGMENT_SEPARATOR = " · ";
 
+/**
+ * Draggable height grip on the dock's top rule (U+25AC BLACK RECTANGLE).
+ * A run of blocks reads as a physical grab bar, unlike the light rule char.
+ */
+export const GRIP_CHAR = "▬";
+export const HEIGHT_GRIP_BLOCKS = 10;
+export const HEIGHT_GRIP_MIN_BLOCKS = 3;
+
 // ---------------------------------------------------------------------------
 // Time & durations
 // ---------------------------------------------------------------------------
@@ -195,6 +203,21 @@ export function footerSegment(runningCount: number): string {
 	return `${runningCount} task(s)${SEGMENT_SEPARATOR}/tasks`;
 }
 
+/**
+ * Draw the draggable height grip (a block bar, U+25AC) on the rule. The bar
+ * shrinks with the terminal width and disappears when even the minimum run
+ * cannot fit; the whole top rule remains the mouse drag target.
+ */
+export interface HeaderLineOptions {
+	grip?: boolean;
+}
+
+/** Candidate grip segments, widest first: a space, then a run of blocks. */
+const HEIGHT_GRIP_CHOICES: readonly string[] = Array.from(
+	{ length: HEIGHT_GRIP_BLOCKS - HEIGHT_GRIP_MIN_BLOCKS + 1 },
+	(_, index) => ` ${GRIP_CHAR.repeat(HEIGHT_GRIP_BLOCKS - index)}`,
+);
+
 /** Full-width header line: "── Background Tasks ──────────────────────────" */
 export function formatHeaderLine(
 	title: string,
@@ -202,29 +225,35 @@ export function formatHeaderLine(
 	theme?: { fg: (color: any, text: string) => string },
 	hint?: string,
 	borderColorFn?: (text: string) => string,
+	options?: HeaderLineOptions,
 ): string {
 	const prefix = "── ";
 	const suffix = " ";
-	const prefixWidth = visibleWidth(prefix);
-	const titleWidth = visibleWidth(title);
-	const suffixWidth = visibleWidth(suffix);
-
-	if (hint && width > 40) {
-		const hintText = ` ${hint} `;
-		const hintWidth = visibleWidth(hintText);
-		const midRuleLen = Math.max(1, width - prefixWidth - titleWidth - suffixWidth - hintWidth);
-		const midRule = RULE_CHAR.repeat(midRuleLen);
-		const dimFn = borderColorFn ?? ((t: string) => (theme ? theme.fg("dim", t) : t));
-		const titleStr = theme ? theme.fg("toolTitle", title) : title;
-		const hintStr = theme ? theme.fg("dim", hintText) : hintText;
-		return truncateToWidth(`${dimFn(prefix)}${titleStr}${dimFn(suffix + midRule)}${hintStr}`, width);
-	}
-
-	const ruleLen = Math.max(0, width - prefixWidth - titleWidth - suffixWidth);
-	const rule = RULE_CHAR.repeat(ruleLen);
 	const dimFn = borderColorFn ?? ((t: string) => (theme ? theme.fg("dim", t) : t));
 	const titleStr = theme ? theme.fg("toolTitle", title) : title;
-	return truncateToWidth(`${dimFn(prefix)}${titleStr}${dimFn(suffix + rule)}`, width);
+	const hintText = hint && width > 40 ? ` ${hint} ` : "";
+	const baseWidth = visibleWidth(prefix) + visibleWidth(title) + visibleWidth(suffix);
+
+	// Prefer the widest grip; only drop the hint when the grip cannot fit with
+	// it, and shrink the grip before giving it up entirely.
+	const gripChoices = options?.grip ? [...HEIGHT_GRIP_CHOICES, ""] : [""];
+	const hintChoices = hintText ? [hintText, ""] : [""];
+	for (const grip of gripChoices) {
+		for (const hintChoice of hintChoices) {
+			const fixed = baseWidth + visibleWidth(grip) + visibleWidth(hintChoice);
+			if (fixed + 1 > width) continue;
+			const fill = RULE_CHAR.repeat(width - fixed);
+			const gripStr = grip ? (theme ? theme.fg("mdLink", grip) : grip) : "";
+			const hintStr = hintChoice ? (theme ? theme.fg("dim", hintChoice) : hintChoice) : "";
+			return truncateToWidth(
+				`${dimFn(prefix)}${titleStr}${gripStr}${dimFn(suffix + fill)}${hintStr}`,
+				width,
+			);
+		}
+	}
+
+	// Absurdly narrow terminal: render the title alone and let the caller clip.
+	return truncateToWidth(`${dimFn(prefix)}${titleStr}`, width);
 }
 
 /**
@@ -302,6 +331,40 @@ export interface DetailLinesOptions {
 		fg: (color: any, text: string) => string;
 		bold?: (text: string) => string;
 	};
+}
+
+/**
+ * Key hints shed first when the dock status row is wider than the terminal.
+ * `esc close` is never in this list: it is the way out of dock mode.
+ */
+const DOCK_HINT_DROP_ORDER = ["↑/↓ select", "k kill", "[/] height", "+/- resize"];
+
+/**
+ * Compose the dock's trailing status/hint row. Optional key hints are dropped
+ * (in priority order) on narrow terminals so the line always fits the width,
+ * and the escape hint survives until the very end.
+ */
+export function formatDockStatusLine(
+	statusText: string,
+	hints: string[],
+	width: number,
+): string {
+	const remaining = [...hints];
+	const render = (): string => (remaining.length > 0 ? `${statusText} · ${remaining.join(" · ")}` : statusText);
+	if (visibleWidth(render()) <= width) return render();
+
+	for (const drop of DOCK_HINT_DROP_ORDER) {
+		const index = remaining.indexOf(drop);
+		if (index >= 0) remaining.splice(index, 1);
+		if (visibleWidth(render()) <= width) return render();
+	}
+
+	while (remaining.length > 1 && visibleWidth(render()) > width) {
+		const index = remaining.findIndex((hint) => hint !== "esc close");
+		if (index < 0) break;
+		remaining.splice(index, 1);
+	}
+	return truncateToWidth(render(), width);
 }
 
 /**

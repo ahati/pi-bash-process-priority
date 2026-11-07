@@ -19,6 +19,8 @@
  *   PI_BG_TASKS_MAX        finished tasks retained (default 100)
  *   PI_BG_KILL_GRACE_MS    SIGTERM→SIGKILL grace (default 3000)
  *   PI_BG_LOG_BYTES        model-visible log read cap (default 50000)
+ *   PI_BG_DOCK_MAX_HEIGHT_SHARE  expanded dock height cap as a share of
+ *                          terminal rows, 0.2..0.9 or "50%" (default 0.5)
  *   PI_BASH_NICE_DISABLE   set to "1" to disable all nice wrapping (PRD-001)
  */
 
@@ -34,6 +36,7 @@ import {
 	createManageBackgroundTaskTool,
 } from "./src/bash-override.ts";
 import { DockController, handleDockInput, installDock } from "./src/ui/dock.ts";
+import { resolveDockMaxHeightShare } from "./src/ui/dock-layout.ts";
 import { DockEditor } from "./src/dock-editor.ts";
 import { formatDuration } from "./src/ui/format.ts";
 import { renderBgNotification } from "./src/ui/notification.ts";
@@ -328,7 +331,8 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
-		// /tasks and /bg-tasks commands: expanded bottom view of all tasks up to 40% screen height
+		// /tasks and /bg-tasks commands: expanded bottom view of all tasks,
+		// capped at PI_BG_DOCK_MAX_HEIGHT_SHARE of the terminal (default 50%).
 		let dockControllerRef: DockController | undefined;
 		let dockRef: ReturnType<typeof installDock> | undefined;
 
@@ -374,6 +378,9 @@ export default function (pi: ExtensionAPI) {
 			const controller = new DockController(
 				() => (registry ? registry.list().filter((task) => task.status === "running") : []),
 				() => (registry ? registry.list() : []),
+				// Height cap: the expanded dock never covers more than this share of
+				// the terminal (default 50%). Override with PI_BG_DOCK_MAX_HEIGHT_SHARE.
+				{ maxHeightShare: resolveDockMaxHeightShare(process.env.PI_BG_DOCK_MAX_HEIGHT_SHARE) },
 			);
 			dockControllerRef = controller;
 			const dock = installDock(ctx, registry, controller, {});

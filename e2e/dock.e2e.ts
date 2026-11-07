@@ -23,8 +23,8 @@ mkdirSync(artifacts, { recursive: true });
 
 const COLS = 110;
 const ROWS = 40;
-const LIST_ROWS = 7; // computeLayout(40): available 34, budget 19, L=7, O=12
-const OUTPUT_ROWS = 12;
+const LIST_ROWS = 2; // computeLayout(40): 50% cap → 20 rows, chrome 15, L=2, O=3
+const OUTPUT_ROWS = 3;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 let passed = 0;
@@ -201,10 +201,10 @@ try {
 
 	// ── 7. Click a list row → selection re-binds ────────────────────────────
 	const listStart = handleRow - LIST_ROWS;
-	await terminal.mouse.click(dragCol, listStart + 2); // third visible row → task-3
+	await terminal.mouse.click(dragCol, listStart); // first visible row → task-1
 	await settle();
 	text = await screen();
-	check("clicking a list row selects that task", text.includes("Command: sleep 260"));
+	check("clicking a list row selects that task", text.includes(`Command: ${agentCommand}`));
 
 	// ── 8. Log scrolling via keyboard (wheel routing is covered in regular
 	//    mode — the xtermjs backend wheels at (0,0), see e2e README) ─────────

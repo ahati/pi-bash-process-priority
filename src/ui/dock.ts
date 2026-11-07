@@ -19,6 +19,7 @@ import type { BgTask, TaskManagerApi } from "../types.ts";
 import {
 	dockRow,
 	formatCleanTaskRow,
+	formatDockStatusLine,
 	formatHeaderLine,
 	formatOutputStatusLine,
 	formatResizeHandle,
@@ -28,8 +29,7 @@ import {
 import {
 	clampToRange,
 	computeLayout,
-	DOCK_META_ROWS,
-	DOCK_MIN_LIST_ROWS,
+	DOCK_MIN_PANE_ROWS,
 	DOCK_TAIL_CACHE_SIZE,
 	resolveTermHeight,
 	type DockLayoutMetrics,
@@ -48,6 +48,14 @@ export interface DockOptions {
 	getTui?: () => TUI | undefined;
 }
 
+export interface DockControllerOptions {
+	/**
+	 * Height cap as a share of terminal rows (default 0.5). Set from
+	 * PI_BG_DOCK_MAX_HEIGHT_SHARE; clamped to 0.2–0.9.
+	 */
+	maxHeightShare?: number;
+}
+
 export class DockController {
 	private readonly getRunningTasks: () => BgTask[];
 	private readonly getAllTasks: () => BgTask[];
@@ -64,14 +72,22 @@ export class DockController {
 	private logMaxScroll = 0;
 
 	// PRD-007 Approach A: fixed two-panel layout state.
+	/** User-resized total widget height; undefined = derive from the height cap. */
+	private requestedTotalRows: number | undefined;
 	/** User-resized master-list pane height; undefined = derive the default split. */
 	private requestedListRows: number | undefined;
-	/** Active handle drag: absolute screen Y + pane size at drag start. */
-	private handleDragOrigin: { screenY: number; listRows: number } | undefined;
+	/** Active drag: which boundary, absolute screen Y, and the value at drag start. */
+	private dragOrigin: { kind: "split" | "height"; screenY: number; value: number } | undefined;
+	private readonly maxHeightShare: number | undefined;
 
-	constructor(getRunningTasks: () => BgTask[], getAllTasks?: () => BgTask[]) {
+	constructor(
+		getRunningTasks: () => BgTask[],
+		getAllTasks?: () => BgTask[],
+		options: DockControllerOptions = {},
+	) {
 		this.getRunningTasks = getRunningTasks;
 		this.getAllTasks = getAllTasks ?? getRunningTasks;
+		this.maxHeightShare = options.maxHeightShare;
 	}
 
 	getTasks(): BgTask[] {
@@ -185,7 +201,10 @@ export class DockController {
 
 	/** Fixed two-panel layout metrics (row boundaries, pane sizes) — PRD-007. */
 	getLayoutMetrics(termHeight?: number): DockLayoutMetrics {
-		return computeLayout(resolveTermHeight(termHeight), this.requestedListRows);
+		return computeLayout(resolveTermHeight(termHeight), this.requestedListRows, {
+			totalRows: this.requestedTotalRows,
+			maxHeightShare: this.maxHeightShare,
+		});
 	}
 
 	/** Effective output-tail rows in the expanded two-panel layout. */
@@ -200,38 +219,77 @@ export class DockController {
 	resizeList(delta: number, termHeight?: number): boolean {
 		if (!this.isExpanded()) return false;
 		const metrics = this.getLayoutMetrics(termHeight);
-		return this.applyListRows((this.requestedListRows ?? metrics.defaultListRows) + delta, metrics);
+		return this.applyListRows((this.requestedListRows ?? metrics.listRows) + delta, metrics);
 	}
 
-	/** Begin a mouse drag of the handle row; rows derive from absolute screen Y. */
-	beginHandleDrag(screenY: number, termHeight?: number): void {
-		this.handleDragOrigin = { screenY, listRows: this.getLayoutMetrics(termHeight).listRows };
-	}
-
-	/** Track an active handle drag to a new absolute screen Y. True on change. */
-	dragHandleTo(screenY: number, termHeight?: number): boolean {
-		if (!this.handleDragOrigin) return false;
+	/**
+	 * Resize the whole widget by `delta` rows (the top block grip is the
+	 * widget's top edge). Clamped to [minTotalRows, maxTotalRows], i.e. the
+	 * height cap is the hard ceiling. The split ratio is preserved; the output
+	 * pane absorbs the change. True when the total changed.
+	 */
+	resizeTotal(delta: number, termHeight?: number): boolean {
+		if (!this.isExpanded()) return false;
 		const metrics = this.getLayoutMetrics(termHeight);
-		return this.applyListRows(
-			this.handleDragOrigin.listRows + (screenY - this.handleDragOrigin.screenY),
-			metrics,
-		);
+		return this.applyTotalRows((this.requestedTotalRows ?? metrics.totalRows) + delta, termHeight);
+	}
+
+	/** Begin a mouse drag of the split handle row; rows derive from absolute screen Y. */
+	beginHandleDrag(screenY: number, termHeight?: number): void {
+		this.dragOrigin = { kind: "split", screenY, value: this.getLayoutMetrics(termHeight).listRows };
+	}
+
+	/** Begin a mouse drag of the top rule (height grip); absolute screen Y. */
+	beginHeightDrag(screenY: number, termHeight?: number): void {
+		this.dragOrigin = { kind: "height", screenY, value: this.getLayoutMetrics(termHeight).totalRows };
+	}
+
+	/** Track an active drag to a new absolute screen Y. True on change. */
+	dragHandleTo(screenY: number, termHeight?: number): boolean {
+		const origin = this.dragOrigin;
+		if (!origin) return false;
+		if (origin.kind === "height") {
+			// The grip is the top edge: dragging up (smaller screenY) grows the dock.
+			return this.applyTotalRows(origin.value + (origin.screenY - screenY), termHeight);
+		}
+		return this.applyListRows(origin.value + (screenY - origin.screenY), this.getLayoutMetrics(termHeight));
 	}
 
 	endHandleDrag(): void {
-		this.handleDragOrigin = undefined;
+		this.dragOrigin = undefined;
 	}
 
 	isHandleDragActive(): boolean {
-		return this.handleDragOrigin !== undefined;
+		return this.dragOrigin !== undefined;
+	}
+
+	/** True when the active drag moves the whole widget rather than the split. */
+	isHeightDragActive(): boolean {
+		return this.dragOrigin?.kind === "height";
 	}
 
 	private applyListRows(next: number, metrics: DockLayoutMetrics): boolean {
-		const clamped = clampToRange(next, DOCK_MIN_LIST_ROWS, metrics.maxListRows);
+		const clamped = clampToRange(next, DOCK_MIN_PANE_ROWS, metrics.maxListRows);
 		if (clamped === metrics.listRows) return false;
 		this.requestedListRows = clamped;
 		// Keep the list window consistent with the new pane size.
 		const maxOffset = Math.max(0, this.getTasks().length - clamped);
+		if (this.listOffset > maxOffset) this.listOffset = maxOffset;
+		return true;
+	}
+
+	private applyTotalRows(next: number, termHeight?: number): boolean {
+		const current = this.getLayoutMetrics(termHeight);
+		const clamped = clampToRange(next, current.minTotalRows, current.maxTotalRows);
+		if (clamped === current.totalRows) return false;
+		// The first height resize pins the current split so subsequent height
+		// changes are absorbed by the output pane, not the task list.
+		if (this.requestedListRows === undefined) this.requestedListRows = current.listRows;
+		this.requestedTotalRows = clamped;
+		// The list offset must follow the new pane height; the stored split is
+		// left untouched so growing the dock restores the user's ratio.
+		const updated = this.getLayoutMetrics(termHeight);
+		const maxOffset = Math.max(0, this.getTasks().length - updated.listRows);
 		if (this.listOffset > maxOffset) this.listOffset = maxOffset;
 		return true;
 	}
@@ -488,13 +546,17 @@ export function installDock(
 
 					const lines: string[] = [];
 
-					// 1. Header rule with task count + list window indicator
+					// 1. Header rule with task count + list window indicator. The block
+					// grip (▬▬▬▬) on this rule is the drag target for the widget's total
+					// height (idea 2); it shrinks with the available width.
 					const visibleCount = Math.min(count - offset, listRows);
 					const windowed = count > listRows || offset > 0;
 					const hint = windowed
 						? `${count} task${count === 1 ? "" : "s"} · ${offset + 1}–${offset + visibleCount} of ${count}`
 						: `${count} task${count === 1 ? "" : "s"}`;
-					lines.push(formatHeaderLine("Background Tasks", width, theme, hint, borderColorFn));
+					lines.push(
+						formatHeaderLine("Background Tasks", width, theme, hint, borderColorFn, { grip: true }),
+					);
 
 					// 2. Subtitle (fixed row 2)
 					lines.push(theme ? theme.fg("dim", "current session branch") : "current session branch");
@@ -514,16 +576,20 @@ export function installDock(
 					// 5. Resize handle (fixed single row; drag or +/- to resize)
 					lines.push(formatResizeHandle(width, theme));
 
-					// 6. Task Details title
-					lines.push(theme?.bold ? theme.bold("Task Details") : "Task Details");
+					// 6. Task Details title (hidden when the metadata group collapses)
+					if (metrics.detailTitleRows > 0) {
+						lines.push(theme?.bold ? theme.bold("Task Details") : "Task Details");
+					}
 
-					// 7. Metadata group — always exactly DOCK_META_ROWS rows (padded
-					// when the task has no Cwd/Log).
+					// 7. Metadata group — exactly `metrics.metaRows` rows (0 when the
+					// height cap forces the group out; padded when the task has no
+					// Cwd/Log).
 					const activeTask = all[selectedIndex];
-					const meta = activeTask
-						? taskMetadataLines(activeTask, width, now, { theme, showMetadata: false })
-						: [];
-					for (let i = 0; i < DOCK_META_ROWS; i++) {
+					const meta =
+						activeTask && metrics.metaRows > 0
+							? taskMetadataLines(activeTask, width, now, { theme, showMetadata: false })
+							: [];
+					for (let i = 0; i < metrics.metaRows; i++) {
 						lines.push(meta[i] ?? "");
 					}
 
@@ -591,7 +657,11 @@ export function installDock(
 					lines.push(
 						theme.fg(
 							"dim",
-							`${statusText} · ↑/↓ select · +/- resize · ${logScrollKeys} · k kill · esc close`,
+							formatDockStatusLine(
+								statusText,
+								["↑/↓ select", "+/- resize", "[/] height", logScrollKeys, "k kill", "esc close"],
+								width,
+							),
 						),
 					);
 
@@ -675,6 +745,20 @@ export function installDock(
 						requestRender();
 						return { handled: true };
 					}
+				}
+
+				// Top rule = height grip: press captures, vertical drag resizes the
+				// whole widget (the grip is the top edge, so dragging up grows it).
+				// Only viewport (fullscreen) TUIs dispatch widget mouse events;
+				// regular mode uses the [/] keyboard fallback.
+				if (
+					event.type === "press" &&
+					event.button === "left" &&
+					controller.isExpanded() &&
+					(event.y ?? -1) === 0
+				) {
+					controller.beginHeightDrag(event.screenY, termHeight);
+					return { handled: true, capture: true };
 				}
 
 				// Resize handle: press starts a drag; capture routes the following
@@ -1029,6 +1113,19 @@ export function handleDockInput(
 	}
 	if (data === "-" || data === "_") {
 		controller.resizeList?.(-1, tui?.terminal?.rows);
+		tui?.requestRender();
+		return { consume: true };
+	}
+
+	// ] / [ resize the whole widget between its floor and the 50% height cap
+	// (the keyboard equivalent of dragging the block grip on the top rule).
+	if (data === "]") {
+		controller.resizeTotal?.(1, tui?.terminal?.rows);
+		tui?.requestRender();
+		return { consume: true };
+	}
+	if (data === "[") {
+		controller.resizeTotal?.(-1, tui?.terminal?.rows);
 		tui?.requestRender();
 		return { consume: true };
 	}
