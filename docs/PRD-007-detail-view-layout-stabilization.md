@@ -317,3 +317,70 @@ smoke/dump harness.
 - PNG screenshots need OSC-52 clipboard access (absent in this container); the harness saves SVG.
 - While dock mode is active the dock owns the keyboard (per PRD-005), so scripted `/commands` must
   run after `Esc`.
+
+---
+
+## 13. Reproducible e2e: recorded/replayed fake-LLM output
+
+The e2e now exercises the **real agent path** — user prompt → streamed model
+response → `background_task` tool call → dock reacts — without a live LLM.
+
+### 13.1 Architecture
+
+| Piece | Role |
+| --- | --- |
+| `e2e/replay-provider.ts` | Extension registering provider `replay` / model `scripted` via `pi.registerProvider(name, { api, models, streamSimple })` (the documented custom-provider form, cf. the bundled gitlab-duo example). `streamSimple` re-emits recorded normalized stream events — same deltas, same order, same inter-chunk pauses (÷ `PI_DOCK_E2E_REPLAY_SPEED`, default 4). No network, no API key. |
+| `e2e/fixtures/dock-spawn.json` | The frozen "LLM output": per assistant turn, the exact normalized deltas (`text_*`, `toolcall_*`) with millisecond offsets, the final text, the parsed tool calls, and the stop reason. Committed to git; the e2e derives its expectations (tool arguments → dock row, confirmation word → transcript) from it. |
+| `e2e/record.ts` (`npm run e2e:record`) | Capture-from-live: runs pi against a real provider (`opencode/glm-5.3-flash` by default) with the same prompt and records the `message_update` event cadence into the fixture. Requires valid credentials **once**. |
+| `e2e/make-fixture.ts` (`npm run e2e:fixture`) | Generates an equivalent hand-authored fixture when no credentials are available (current state — the configured opencode key had expired server-side). |
+
+Replay turn N is selected by counting assistant messages already in
+`context.messages`, so a fixed scenario replays turn-for-turn deterministically.
+
+### 13.2 Determinism analysis
+
+Deterministic across runs: the model output (frozen fixture), its cadence
+(scaled, fixed), the prompt, the driver commands, and therefore every
+assertion. Verified: three consecutive fullscreen runs → 40/40 with identical
+assertion sets.
+
+Residual nondeterminism (accepted, assertion-relevant only if we ever assert
+on them — we do not):
+- **Wall-clock UI strings**: task ages (`3s → 4s`), `Started:` timestamps, and
+  the 1 s dock ticker tick with real time. Removing these would need a clock
+  injection seam through pi itself — out of scope.
+- **Filesystem timing**: log reads land within milliseconds but not at fixed
+  offsets; the fixture's height-invariance contract is immune by design.
+- **Port/PTY allocation**: irrelevant to assertions.
+
+### 13.3 Replay-provider contract finding
+
+pi-agent-core's loop filters the finalized message's content by
+`block.type === "toolCall"` to decide execution. A custom `streamSimple` that
+replaces its content block in `toolcall_end` must preserve that discriminator
+— dropping it makes the turn look like plain text (tool never executes, loop
+ends after one turn). The replayer now re-applies `type: "toolCall"` on
+`toolcall_end`; this mirrors how the built-in API implementations keep the
+block object identity across `content_block_stop`.
+
+### 13.4 Privacy policy (name & API key containment)
+
+Per operator decision: **provider names and model names are fine;
+the operator's name and API keys are not.**
+
+- The fixture records **model output only** — normalized deltas, final text,
+  parsed tool-call arguments (`id`/`name`/`arguments`; opaque provider fields
+  like `thoughtSignature` are stripped at capture). No prompt context, no
+  message metadata, no credentials. `streamSimple` receives the resolved API
+  key via `options` and never reads or logs it; the replay provider declares a
+  literal no-op key.
+- `e2e/privacy.ts` derives this machine's concrete identities (git
+  `user.name`/`user.email`, OS username, home directory) and scans every
+  capture **and every replay load** for them plus credential-shaped patterns
+  (`sk-…`, `ghp_…`, `AKIA…`, JWTs, authorization/api-key assignments, 43+
+  char secret runs). The recorder **quarantines a violating fixture outside
+  the repo and fails**; the replayer refuses to load one.
+- The recording run minimizes what can reach the model in the first place:
+  `--no-context-files --no-skills --no-extensions --no-session` and `cwd`
+  `/tmp` — no AGENTS.md, no skills, no repo context, no persisted session.
+- Scan result for the current synthetic fixture: clean.

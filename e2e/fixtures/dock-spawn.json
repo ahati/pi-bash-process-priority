@@ -1,0 +1,179 @@
+[
+  {
+    "text": "Starting the background task now.",
+    "toolCalls": [
+      {
+        "id": "replay-tool-1",
+        "name": "background_task",
+        "arguments": {
+          "command": "sleep 300",
+          "taskName": "e2e-alpha"
+        }
+      }
+    ],
+    "events": [
+      {
+        "t": 180,
+        "type": "text_start",
+        "contentIndex": 0
+      },
+      {
+        "t": 215,
+        "type": "text_delta",
+        "contentIndex": 0,
+        "delta": "Starting "
+      },
+      {
+        "t": 267,
+        "type": "text_delta",
+        "contentIndex": 0,
+        "delta": "the "
+      },
+      {
+        "t": 336,
+        "type": "text_delta",
+        "contentIndex": 0,
+        "delta": "background "
+      },
+      {
+        "t": 382,
+        "type": "text_delta",
+        "contentIndex": 0,
+        "delta": "task "
+      },
+      {
+        "t": 445,
+        "type": "text_delta",
+        "contentIndex": 0,
+        "delta": "now."
+      },
+      {
+        "t": 475,
+        "type": "text_end",
+        "contentIndex": 0,
+        "content": "Starting the background task now."
+      },
+      {
+        "t": 1450,
+        "type": "toolcall_start",
+        "contentIndex": 1
+      },
+      {
+        "t": 1480,
+        "type": "toolcall_delta",
+        "contentIndex": 1,
+        "delta": "{\"comma"
+      },
+      {
+        "t": 1515,
+        "type": "toolcall_delta",
+        "contentIndex": 1,
+        "delta": "nd\":\"sleep "
+      },
+      {
+        "t": 1550,
+        "type": "toolcall_delta",
+        "contentIndex": 1,
+        "delta": "300\",\"taskNa"
+      },
+      {
+        "t": 1585,
+        "type": "toolcall_delta",
+        "contentIndex": 1,
+        "delta": "me\":\"e2e-alpha\"}"
+      },
+      {
+        "t": 1640,
+        "type": "toolcall_end",
+        "contentIndex": 1,
+        "toolCall": {
+          "id": "replay-tool-1",
+          "name": "background_task",
+          "arguments": {
+            "command": "sleep 300",
+            "taskName": "e2e-alpha"
+          }
+        }
+      }
+    ],
+    "stopReason": "toolUse"
+  },
+  {
+    "text": "The background task e2e-alpha is now running in the background.",
+    "toolCalls": [],
+    "events": [
+      {
+        "t": 240,
+        "type": "text_start",
+        "contentIndex": 0
+      },
+      {
+        "t": 275,
+        "type": "text_delta",
+        "contentIndex": 0,
+        "delta": "The "
+      },
+      {
+        "t": 327,
+        "type": "text_delta",
+        "contentIndex": 0,
+        "delta": "background "
+      },
+      {
+        "t": 396,
+        "type": "text_delta",
+        "contentIndex": 0,
+        "delta": "task "
+      },
+      {
+        "t": 442,
+        "type": "text_delta",
+        "contentIndex": 0,
+        "delta": "e2e-alpha "
+      },
+      {
+        "t": 505,
+        "type": "text_delta",
+        "contentIndex": 0,
+        "delta": "is "
+      },
+      {
+        "t": 545,
+        "type": "text_delta",
+        "contentIndex": 0,
+        "delta": "now "
+      },
+      {
+        "t": 602,
+        "type": "text_delta",
+        "contentIndex": 0,
+        "delta": "running "
+      },
+      {
+        "t": 676,
+        "type": "text_delta",
+        "contentIndex": 0,
+        "delta": "in "
+      },
+      {
+        "t": 727,
+        "type": "text_delta",
+        "contentIndex": 0,
+        "delta": "the "
+      },
+      {
+        "t": 795,
+        "type": "text_delta",
+        "contentIndex": 0,
+        "delta": "background."
+      },
+      {
+        "t": 825,
+        "type": "text_end",
+        "contentIndex": 0,
+        "content": "The background task e2e-alpha is now running in the background."
+      }
+    ],
+    "stopReason": "stop"
+  }
+]

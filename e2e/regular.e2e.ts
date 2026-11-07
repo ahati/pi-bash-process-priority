@@ -52,7 +52,7 @@ const settle = () => sleep(450);
 try {
 	await terminal.run(
 		"pi",
-		["-e", ext, "-e", driver, "--no-extensions", "--no-session", "--offline", "--tui-mode", "regular"],
+		["-e", ext, "-e", driver, "--no-extensions", "--no-session", "--no-context-files", "--no-skills", "--offline", "--tui-mode", "regular"],
 		{ cols: COLS, rows: ROWS, cwd: "/tmp" },
 	);
 	await terminal.getByText("escape interrupt").expect({ timeout: 20000 });

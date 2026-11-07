@@ -18,7 +18,9 @@
     "check": "npm run lint && npm run test",
     "typecheck": "tsc -p tsconfig.json",
     "e2e": "tsx e2e/dock.e2e.ts && tsx e2e/regular.e2e.ts",
-    "e2e:probe": "tsx e2e/probe.ts"
+    "e2e:probe": "tsx e2e/probe.ts",
+    "e2e:record": "tsx e2e/record.ts",
+    "e2e:fixture": "tsx e2e/make-fixture.ts"
   },
   "keywords": [
     "pi-package",

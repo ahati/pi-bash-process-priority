@@ -22,7 +22,7 @@ const terminal = TuiTest.ephemeral("dock-probe", { backend: "xtermjs" });
 try {
 	await terminal.run(
 		"pi",
-		["-e", ext, "-e", driver, "--no-extensions", "--no-session", "--offline", "--tui-mode", "fullscreen"],
+		["-e", ext, "-e", driver, "--no-extensions", "--no-session", "--no-context-files", "--no-skills", "--offline", "--tui-mode", "fullscreen"],
 		{ cols: COLS, rows: ROWS, cwd: "/tmp" },
 	);
 	await sleep(4000);

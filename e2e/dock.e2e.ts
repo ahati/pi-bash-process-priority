@@ -12,6 +12,8 @@ import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { TuiTest } from "@microsoft/tui-test";
+import { existsSync, readFileSync } from "node:fs";
+import { SPAWN_PROMPT, fixturePath } from "./scenario.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const ext = join(here, "..", "index.ts");
@@ -49,25 +51,61 @@ async function rowOf(text: string): Promise<number> {
 }
 const settle = () => sleep(450);
 
+// ── Fixture-derived expectations (capture once, replay deterministically) ──
+if (!existsSync(fixturePath)) {
+	console.error(`Missing replay fixture ${fixturePath}. Run \`npm run e2e:record\` first.`);
+	process.exit(1);
+}
+const turns = JSON.parse(readFileSync(fixturePath, "utf8")) as Array<{
+	text: string;
+	toolCalls: Array<{ name: string; arguments: Record<string, unknown> }>;
+}>;
+const agentToolCall = turns[0].toolCalls.find((c) => c.name === "background_task");
+if (!agentToolCall) {
+	console.error("Replay fixture turn 1 has no background_task tool call. Re-run `npm run e2e:record`.");
+	process.exit(1);
+}
+const agentCommand = String(agentToolCall.arguments.command ?? "");
+const agentTaskName = String(agentToolCall.arguments.taskName ?? "");
+// A distinctive word from the confirmation turn — terminal wrapping can split
+// sentences, but not short words.
+const confirmationWord =
+	turns[1]?.text
+		.split(/\s+/)
+		.map((w) => w.replace(/[^A-Za-z0-9]/g, ""))
+		.filter((w) => w.length >= 5 && w.length <= 20)
+		.sort((a, b) => b.length - a.length)[0] ?? "";
+
 try {
 	await terminal.run(
 		"pi",
-		["-e", ext, "-e", driver, "--no-extensions", "--no-session", "--offline", "--tui-mode", "fullscreen"],
+		["-e", ext, "-e", driver, "-e", join(here, "replay-provider.ts"), "--no-extensions", "--no-session", "--no-context-files", "--no-skills", "--offline", "--provider", "replay", "--model", "scripted", "--tui-mode", "fullscreen"],
 		{ cols: COLS, rows: ROWS, cwd: "/tmp" },
 	);
 	await terminal.getByText("escape interrupt").expect({ timeout: 20000 });
 	await sleep(600);
 
-	// ── 1. Spawn three real background tasks (dock inactive — submits land) ─
-	await terminal.submit("/spawn seq 1 400; sleep 240");
-	await sleep(900);
+	// ── 0. The agent spawns the first task through the REAL tool path ──────
+	// Prompt → replayed LLM stream → background_task tool call → dock.
+	await terminal.submit(SPAWN_PROMPT);
+	await terminal.getByText(agentTaskName).expect({ timeout: 90000 });
+	await sleep(1200); // let the confirmation turn finish streaming
+	await terminal.screenshot(join(artifacts, "e2e-00-agent-spawn.svg"));
+	let text = await screen();
+	check("agent path spawned the task (dock row from LLM tool call)", (text.match(/● \[/g) ?? []).length === 1);
+	check("compact dock labels the task by taskName", text.includes(agentTaskName));
+	if (confirmationWord) {
+		check("agent confirmation text is in the transcript", text.includes(confirmationWord));
+	}
+
+	// ── 1. Two more tasks via the driver (dock inactive — submits land) ────
 	await terminal.submit("/spawn seq 1 400; sleep 241");
 	await sleep(900);
 	await terminal.submit("/spawn sleep 260");
 	await sleep(900);
 
 	await terminal.screenshot(join(artifacts, "e2e-01-compact-dock.svg"));
-	let text = await screen();
+	text = await screen();
 	check("compact dock shows 3 running rows", (text.match(/● \[/g) ?? []).length === 3);
 
 	// ── 2. Dock mode via ↓, then Esc releases the keyboard ─────────────────
@@ -90,7 +128,7 @@ try {
 	check("master list row present", text.includes("seq 1 400"));
 	check("handle row present", text.includes("drag or +/- to resize"));
 	check("details title present", text.includes("Task Details"));
-	check("metadata Command present", text.includes("Command: seq 1 400; sleep 240"));
+	check("metadata Command present (agent task from fixture)", text.includes(`Command: ${agentCommand}`));
 	check("metadata Cwd/Log present", text.includes("Cwd:") && text.includes("Log:"));
 	check("output section present", text.includes("Output"));
 	check("tail follows live output", text.includes("following tail"));
@@ -171,11 +209,11 @@ try {
 	// ── 8. Log scrolling via keyboard (wheel routing is covered in regular
 	//    mode — the xtermjs backend wheels at (0,0), see e2e README) ─────────
 	// Scroll assertions need a log deeper than the output pane: select
-	// task-1 (402 log lines). task-3's 3-line log correctly snaps follow
-	// back on (nothing to scroll).
-	await terminal.mouse.click(dragCol, listStart); // first row → task-1
+	// the second row (driver task with a 402-line log). The agent task's log
+	// is only a few lines, and a shallow log correctly snaps follow back
+	await terminal.mouse.click(dragCol, listStart + 1); // second row → deep-log driver task
 	await settle();
-	check("click selects task-1", (await screen()).includes("Command: seq 1 400; sleep 240"));
+	check("click selects the deep-log driver task", (await screen()).includes("Command: seq 1 400; sleep 241"));
 	await terminal.keyboard.press("PageUp");
 	await settle();
 	await terminal.screenshot(join(artifacts, "e2e-06-pgup-output.svg"));
@@ -200,8 +238,8 @@ try {
 	check("End resumes tail follow", text.includes("following tail"));
 
 	// ── 9. Kill the selected task (k) ───────────────────────────────────────
-	// task-1 is selected (from the click in step 8). The expanded list marks
-	// killed tasks with the ✗ glyph; the compact dock (running-only) drops
+	// The deep-log driver task is selected (from the click in step 8). The
+	// expanded list marks killed tasks with the ✗ glyph; the compact dock
 	// the row entirely — asserted deterministically after Esc below.
 	await terminal.keyboard.press("k");
 	await sleep(1000);
@@ -217,7 +255,7 @@ try {
 	check("Esc closes the expanded view", !text.includes("Task Details"));
 	text = await screen();
 	check("killed task left the running-only compact dock (2 survive)", (text.match(/● \[/g) ?? []).length === 2);
-	check("compact dock keeps the surviving task", text.includes("sleep 241") && text.includes("running"));
+	check("compact dock keeps the surviving tasks", text.includes("sleep 260") && text.includes(agentTaskName) && text.includes("running"));
 } catch (err) {
 	failed++;
 	failures.push(`harness error: ${err}`);
