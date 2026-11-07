@@ -79,7 +79,10 @@ export function formatOutputStatusLine(options: {
 		const maxTop = Math.max(0, totalLines - visibleLines);
 		const start = Math.min(scrollTop, maxTop);
 		const end = Math.min(totalLines, start + visibleLines);
-		return `lines ${start + 1}–${end} of ${totalLines} · ↑/↓ PgUp/PgDn scroll · ↓ at bottom follows`;
+		// Scrolled-mode hints stay terse: the widget appends the global key
+		// suffix (↑/↓ select · +/- resize · PgUp/PgDn scroll · k kill · esc
+		// close), so a long base truncates on narrow terminals (e2e finding).
+		return `lines ${start + 1}–${end} of ${totalLines} · ↓ end follows`;
 	}
 	const suffix = truncated ? ` of ${formatSize(totalBytes)}` : "";
 	return `following tail ${formatSize(bytesRead)}${suffix} · ↑ scroll`;
@@ -255,6 +258,21 @@ export function formatCleanTaskRow(
 	const styledRight = theme ? theme.fg("dim", rightText) : rightText;
 
 	return truncateToWidth(`${leftPrefix}${truncatedName}${" ".repeat(padding)}${styledRight}`, width);
+}
+
+/**
+ * Resize handle row between the master list and the details pane
+ * (PRD-007 Approach A): `⇕ (drag or +/- to resize) ──────────…`
+ * Always exactly one row; the whole row is the drag/click target.
+ */
+export function formatResizeHandle(
+	width: number,
+	theme?: { fg: (color: any, text: string) => string },
+): string {
+	const label = "⇕ (drag or +/- to resize) ";
+	const dimFn = theme ? (t: string) => theme.fg("dim", t) : (t: string) => t;
+	const ruleLen = Math.max(0, width - visibleWidth(label));
+	return truncateToWidth(dimFn(label + RULE_CHAR.repeat(ruleLen)), width);
 }
 
 /**

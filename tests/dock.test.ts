@@ -149,8 +149,14 @@ test("installDock: widget hidden while no tasks are running", async () => {
 	try {
 		const controller = new DockController(() => reg.list().filter((t: BgTask) => t.status === "running"));
 		const dock = installDock(ctx as never, reg, controller);
-		const hidden = calls.filter((call) => call.content === undefined);
-		assert.ok(hidden.length > 0, "expected at least one clear call");
+		// PRD-007 G4: the widget is registered lazily and only toggled when
+		// needed — while no tasks exist and the dock is collapsed, no
+		// component factory is ever installed (equivalent to clear-on-empty).
+		assert.equal(
+			calls.filter((call) => call.content !== undefined).length,
+			0,
+			"no widget factory installed while idle",
+		);
 		for (const call of calls) {
 			assert.equal(call.key, DOCK_WIDGET_KEY);
 			assert.equal(call.placement, "belowEditor");

@@ -12,8 +12,8 @@
  */
 
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import type { Component, TUI, TuiMouseEvent } from "@earendil-works/pi-tui";
-import { isKeyRelease, Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import type { TUI, TuiMouseEvent, TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { isKeyRelease, isViewportTUI, Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 
 import type { BgTask, TaskManagerApi } from "../types.ts";
 import {
@@ -21,9 +21,19 @@ import {
 	formatCleanTaskRow,
 	formatHeaderLine,
 	formatOutputStatusLine,
+	formatResizeHandle,
 	RULE_CHAR,
 	taskMetadataLines,
 } from "./format.ts";
+import {
+	clampToRange,
+	computeLayout,
+	DOCK_META_ROWS,
+	DOCK_MIN_LIST_ROWS,
+	DOCK_TAIL_CACHE_SIZE,
+	resolveTermHeight,
+	type DockLayoutMetrics,
+} from "./dock-layout.ts";
 import { boundedRead, DETAIL_TAIL_BYTES, toOutputLines } from "../log-reader.ts";
 import { debugLog } from "../debug.ts";
 import { disableTerminalMouse, enableTerminalMouse, parseMouseInput, type WritableTerminalHost } from "./terminal-mouse.ts";
@@ -52,6 +62,12 @@ export class DockController {
 	private logScroll = 0;
 	private logFollow = true;
 	private logMaxScroll = 0;
+
+	// PRD-007 Approach A: fixed two-panel layout state.
+	/** User-resized master-list pane height; undefined = derive the default split. */
+	private requestedListRows: number | undefined;
+	/** Active handle drag: absolute screen Y + pane size at drag start. */
+	private handleDragOrigin: { screenY: number; listRows: number } | undefined;
 
 	constructor(getRunningTasks: () => BgTask[], getAllTasks?: () => BgTask[]) {
 		this.getRunningTasks = getRunningTasks;
@@ -155,12 +171,69 @@ export class DockController {
 		return this.active || this.isExpanded() ? this.index : -1;
 	}
 
+	/**
+	 * Master-list rows for the current mode.
+	 * Compact mode caps at MAX_DOCK_VISIBLE; expanded mode returns the
+	 * effective pane size of the fixed two-panel layout (PRD-007 Approach A).
+	 */
 	getMaxVisible(termHeight?: number): number {
 		if (!this.isExpanded()) {
 			return MAX_DOCK_VISIBLE;
 		}
-		const h = termHeight ?? (typeof process !== "undefined" && process.stdout?.rows ? process.stdout.rows : 24);
-		return Math.max(3, Math.floor(h * 0.4));
+		return this.getLayoutMetrics(termHeight).listRows;
+	}
+
+	/** Fixed two-panel layout metrics (row boundaries, pane sizes) — PRD-007. */
+	getLayoutMetrics(termHeight?: number): DockLayoutMetrics {
+		return computeLayout(resolveTermHeight(termHeight), this.requestedListRows);
+	}
+
+	/** Effective output-tail rows in the expanded two-panel layout. */
+	getOutputRows(termHeight?: number): number {
+		return this.isExpanded() ? this.getLayoutMetrics(termHeight).outputRows : 0;
+	}
+
+	/**
+	 * Resize the master-list pane by `delta` rows (output pane absorbs the
+	 * difference). True when the pane size changed.
+	 */
+	resizeList(delta: number, termHeight?: number): boolean {
+		if (!this.isExpanded()) return false;
+		const metrics = this.getLayoutMetrics(termHeight);
+		return this.applyListRows((this.requestedListRows ?? metrics.defaultListRows) + delta, metrics);
+	}
+
+	/** Begin a mouse drag of the handle row; rows derive from absolute screen Y. */
+	beginHandleDrag(screenY: number, termHeight?: number): void {
+		this.handleDragOrigin = { screenY, listRows: this.getLayoutMetrics(termHeight).listRows };
+	}
+
+	/** Track an active handle drag to a new absolute screen Y. True on change. */
+	dragHandleTo(screenY: number, termHeight?: number): boolean {
+		if (!this.handleDragOrigin) return false;
+		const metrics = this.getLayoutMetrics(termHeight);
+		return this.applyListRows(
+			this.handleDragOrigin.listRows + (screenY - this.handleDragOrigin.screenY),
+			metrics,
+		);
+	}
+
+	endHandleDrag(): void {
+		this.handleDragOrigin = undefined;
+	}
+
+	isHandleDragActive(): boolean {
+		return this.handleDragOrigin !== undefined;
+	}
+
+	private applyListRows(next: number, metrics: DockLayoutMetrics): boolean {
+		const clamped = clampToRange(next, DOCK_MIN_LIST_ROWS, metrics.maxListRows);
+		if (clamped === metrics.listRows) return false;
+		this.requestedListRows = clamped;
+		// Keep the list window consistent with the new pane size.
+		const maxOffset = Math.max(0, this.getTasks().length - clamped);
+		if (this.listOffset > maxOffset) this.listOffset = maxOffset;
+		return true;
 	}
 
 	enterDock(fromBottom = false): boolean {
@@ -293,7 +366,7 @@ interface DockWidget {
 	render(width: number): string[];
 	invalidate(): void;
 	dispose?(): void;
-	handleMouse?(event: TuiMouseEvent): { handled: boolean } | undefined;
+	handleMouse?(event: TuiMouseEvent): TuiMouseEventResult | undefined;
 }
 
 export function installDock(
@@ -306,29 +379,49 @@ export function installDock(
 	let borderColorFn: ((text: string) => string) | undefined = options.borderColor;
 	let disposed = false;
 	let capturedTui: { requestRender(): void } | undefined;
+	let widgetInstalled = false;
 
-	let cachedDetailTaskId: string | undefined;
-	let cachedOutputLines: string[] = [];
-	let cachedBytesRead = 0;
-	let cachedTotalBytes = 0;
-	let cachedTruncated = false;
-	let refreshing = false;
+	const requestRender = (): void => {
+		(capturedTui ?? options.getTui?.())?.requestRender();
+	};
+
+	/**
+	 * Per-task output-tail cache (PRD-007 G2). Selection changes re-render from
+	 * the cache instead of collapsing to "(no output yet)" while the async read
+	 * is in flight — the geometry never blanks out.
+	 */
+	interface TailEntry {
+		lines: string[];
+		bytesRead: number;
+		totalBytes: number;
+		truncated: boolean;
+	}
+	const tailCache = new Map<string, TailEntry>();
+	const pendingTails = new Set<string>();
 
 	async function refreshDockTail(task: BgTask): Promise<void> {
-		if (refreshing || !task.logPath || disposed) return;
-		refreshing = true;
+		if (!task.logPath || disposed || pendingTails.has(task.id)) return;
+		pendingTails.add(task.id);
 		try {
 			const read = await boundedRead(task.logPath, DETAIL_TAIL_BYTES, true);
-			cachedOutputLines = toOutputLines(read.content);
-			cachedBytesRead = read.bytesRead;
-			cachedTotalBytes = read.totalBytes;
-			cachedTruncated = read.truncated;
-			cachedDetailTaskId = task.id;
+			tailCache.delete(task.id); // re-insert => freshest at eviction-order tail
+			tailCache.set(task.id, {
+				lines: toOutputLines(read.content),
+				bytesRead: read.bytesRead,
+				totalBytes: read.totalBytes,
+				truncated: read.truncated,
+			});
+			while (tailCache.size > DOCK_TAIL_CACHE_SIZE) {
+				const oldest = tailCache.keys().next().value;
+				if (oldest === undefined) break;
+				tailCache.delete(oldest);
+			}
 		} catch {
-			cachedOutputLines = [];
+			// Keep any previous cache entry; the render falls back to the
+			// placeholder row for tasks that were never read successfully.
 		} finally {
-			refreshing = false;
-			if (!disposed) (capturedTui ?? options.getTui?.())?.requestRender();
+			pendingTails.delete(task.id);
+			if (!disposed) requestRender();
 		}
 	}
 
@@ -347,12 +440,20 @@ export function installDock(
 		const all = controller.getTasks();
 		if (all.length === 0 && !controller.isExpanded()) {
 			stopTicker();
-			ctx.ui.setWidget(DOCK_WIDGET_KEY, undefined, { placement: "belowEditor" });
+			if (widgetInstalled) {
+				// PRD-007 G4: only toggle registration when it actually changes —
+				// setWidget() tears down and recreates the component on every call.
+				widgetInstalled = false;
+				ctx.ui.setWidget(DOCK_WIDGET_KEY, undefined, { placement: "belowEditor" });
+			}
 			return;
 		}
-		ctx.ui.setWidget(DOCK_WIDGET_KEY, factory, { placement: "belowEditor" });
+		if (!widgetInstalled) {
+			widgetInstalled = true;
+			ctx.ui.setWidget(DOCK_WIDGET_KEY, factory, { placement: "belowEditor" });
+		}
 		startTicker();
-		(capturedTui ?? options.getTui?.())?.requestRender();
+		requestRender();
 	}
 
 	const factory = (tui: TUI, theme: Theme): DockWidget => {
@@ -367,126 +468,132 @@ export function installDock(
 
 				const now = Date.now();
 				const count = all.length;
-				const termHeight =
-					tui?.terminal?.rows ??
-					(typeof process !== "undefined" && process.stdout?.rows ? process.stdout.rows : 24);
+				const termHeight = resolveTermHeight(tui?.terminal?.rows);
 
 				// ===================================================================
 				// Unified Master-Detail View (/tasks or detail)
+				// Fixed two-panel layout — PRD-007 Approach A: every section is
+				// pinned to a fixed row offset; the widget's total height is a pure
+				// function of (termHeight, user-resized list pane), never of the
+				// selection, task count, or output volume.
 				// ===================================================================
 				if (controller.isExpanded()) {
-					const maxVisible = controller.getMaxVisible(termHeight);
-					const visibleCount = Math.min(count, maxVisible);
+					const metrics = controller.getLayoutMetrics(termHeight);
+					const listRows = metrics.listRows;
 					const offset = controller.getListOffset(termHeight);
-					const visibleTasks = all.slice(offset, offset + visibleCount);
-					const selectedIndex = controller.selectedIndex();
+					const visibleTasks = all.slice(offset, offset + listRows);
+					const rawSelected = controller.selectedIndex();
+					const selectedIndex =
+						rawSelected >= 0 ? Math.min(rawSelected, count - 1) : Math.min(offset, count - 1);
 
 					const lines: string[] = [];
 
-					// 1. Header rule: ── Background Tasks ──────────────────────────
-					lines.push(formatHeaderLine("Background Tasks", width, theme));
+					// 1. Header rule with task count + list window indicator
+					const visibleCount = Math.min(count - offset, listRows);
+					const windowed = count > listRows || offset > 0;
+					const hint = windowed
+						? `${count} task${count === 1 ? "" : "s"} · ${offset + 1}–${offset + visibleCount} of ${count}`
+						: `${count} task${count === 1 ? "" : "s"}`;
+					lines.push(formatHeaderLine("Background Tasks", width, theme, hint, borderColorFn));
 
-					// 2. Subtitle: N tasks  current session branch
-					lines.push(
-						theme
-							? theme.fg("dim", `${count} task${count === 1 ? "" : "s"}  current session branch`)
-							: `${count} task${count === 1 ? "" : "s"}  current session branch`,
-					);
+					// 2. Subtitle (fixed row 2)
+					lines.push(theme ? theme.fg("dim", "current session branch") : "current session branch");
+
+					// 3. Blank separator (fixed row 3)
 					lines.push("");
 
-					// 3. Master List of Tasks with completion markers
-					for (let i = 0; i < visibleTasks.length; i++) {
+					// 4. Master list — always exactly listRows rows. Blank pad rows
+					// keep the details pane at a fixed vertical offset.
+					for (let i = 0; i < listRows; i++) {
 						const taskIndex = offset + i;
 						const task = visibleTasks[i];
 						const isSelected = taskIndex === selectedIndex;
-						lines.push(formatCleanTaskRow(task, isSelected, width, now, theme));
+						lines.push(task ? formatCleanTaskRow(task, isSelected, width, now, theme) : "");
 					}
 
-					// Pagination hint if tasks exceed visible window
-					if (count > visibleCount) {
-						lines.push(
-							theme
-								? theme.fg("dim", `  (${offset + 1}–${offset + visibleCount} of ${count} · scroll with mouse/arrows)`)
-								: `  (${offset + 1}–${offset + visibleCount} of ${count} · scroll with mouse/arrows)`,
-						);
+					// 5. Resize handle (fixed single row; drag or +/- to resize)
+					lines.push(formatResizeHandle(width, theme));
+
+					// 6. Task Details title
+					lines.push(theme?.bold ? theme.bold("Task Details") : "Task Details");
+
+					// 7. Metadata group — always exactly DOCK_META_ROWS rows (padded
+					// when the task has no Cwd/Log).
+					const activeTask = all[selectedIndex];
+					const meta = activeTask
+						? taskMetadataLines(activeTask, width, now, { theme, showMetadata: false })
+						: [];
+					for (let i = 0; i < DOCK_META_ROWS; i++) {
+						lines.push(meta[i] ?? "");
 					}
 
+					// 8. Divider rule
+					const rule = (borderColorFn ?? ((t: string) => theme.fg("dim", t)))(
+						RULE_CHAR.repeat(Math.max(1, width)),
+					);
+					lines.push(rule);
+
+					// 9. Output header
+					lines.push("Output");
 					lines.push("");
 
-					// Active selected task for details and output
-					const activeTask =
-						selectedIndex >= 0 && selectedIndex < all.length ? all[selectedIndex] : visibleTasks[0];
-
-					if (activeTask) {
-						// Trigger log tail refresh if selected task changed
-						if (cachedDetailTaskId !== activeTask.id) {
-							void refreshDockTail(activeTask);
-						}
-
-						// 4. Task Details Section
-						lines.push(theme?.bold ? theme.bold("Task Details") : "Task Details");
-						lines.push(
-							...taskMetadataLines(activeTask, width, now, {
-								theme,
-								showMetadata: false,
-							}),
-						);
-
-						// 5. Divider Rule
-						const rule = (borderColorFn ?? ((t: string) => theme.fg("dim", t)))(
-							RULE_CHAR.repeat(Math.max(1, width)),
-						);
-						lines.push(rule);
-
-						// 6. Output Header
-						lines.push("Output");
-						lines.push("");
-
-						// 7. Output Tail
-						const outputLines =
-							cachedDetailTaskId === activeTask.id ? cachedOutputLines : [];
-						const maxOutputHeight = Math.max(4, Math.min(8, Math.floor(termHeight * 0.25)));
-
-						const totalLines = outputLines.length;
-						const maxScroll = Math.max(0, totalLines - maxOutputHeight);
-						controller.setMaxScroll(maxScroll);
-
-						const scrollInfo = controller.getDetailScroll();
-						let startLine = 0;
-						if (scrollInfo.follow || totalLines <= maxOutputHeight) {
-							startLine = Math.max(0, totalLines - maxOutputHeight);
-						} else {
-							startLine = Math.min(scrollInfo.scroll, maxScroll);
-						}
-
-						const slice = outputLines.slice(startLine, startLine + maxOutputHeight);
-						if (slice.length === 0) {
-							lines.push(theme.fg("dim", "(no output yet)"));
-						} else {
-							for (const line of slice) {
-								lines.push(truncateToWidth(line, width));
-							}
-						}
-
-						lines.push("");
-
-						// 8. Interactive Hint Line
-						const statusText = formatOutputStatusLine({
-							follow: scrollInfo.follow,
-							totalLines,
-							scrollTop: startLine,
-							visibleLines: maxOutputHeight,
-							bytesRead: cachedBytesRead,
-							totalBytes: cachedTotalBytes,
-							truncated: cachedTruncated,
-						});
-						lines.push(
-							theme.fg(
-								"dim",
-								`${statusText} · ↑/↓ select · PgUp/PgDn scroll log · k kill · esc close`,
-							),
-						);
+					// 10. Output tail — always exactly outputRows rows. The per-task
+					// tail cache (PRD-007 G2) keeps content stable across selection
+					// changes while the async read is in flight.
+					const entry = activeTask && activeTask.logPath ? tailCache.get(activeTask.id) : undefined;
+					if (activeTask && !entry && activeTask.logPath) {
+						void refreshDockTail(activeTask);
 					}
+					const outputLines = entry?.lines ?? [];
+					const outputRows = metrics.outputRows;
+
+					const totalLines = outputLines.length;
+					const maxScroll = Math.max(0, totalLines - outputRows);
+					controller.setMaxScroll(maxScroll);
+
+					const scrollInfo = controller.getDetailScroll();
+					let startLine = 0;
+					if (scrollInfo.follow || totalLines <= outputRows) {
+						startLine = Math.max(0, totalLines - outputRows);
+					} else {
+						startLine = Math.min(scrollInfo.scroll, maxScroll);
+					}
+
+					const slice = outputLines.slice(startLine, startLine + outputRows);
+					const outputStart = lines.length;
+					if (slice.length === 0) {
+						lines.push(theme.fg("dim", "(no output yet)"));
+					} else {
+						for (const line of slice) {
+							lines.push(truncateToWidth(line, width));
+						}
+					}
+					while (lines.length - outputStart < outputRows) {
+						lines.push("");
+					}
+
+					// 11. Interactive hint line (fixed final row). Log-scroll keys are
+					// mode-dependent: fullscreen pi binds PageUp/PageDown to the
+					// transcript scroller (alt-screen consumes them before extension
+					// input listeners), so there the log scrolls with Home/End;
+					// regular mode has no viewport handler and PgUp/PgDn reach the
+					// dock's raw input path. (e2e finding, PRD-007 §11.)
+					const logScrollKeys = tui && isViewportTUI(tui) ? "Home/End log" : "PgUp/PgDn log";
+					const statusText = formatOutputStatusLine({
+						follow: scrollInfo.follow,
+						totalLines,
+						scrollTop: startLine,
+						visibleLines: outputRows,
+						bytesRead: entry?.bytesRead ?? 0,
+						totalBytes: entry?.totalBytes ?? 0,
+						truncated: entry?.truncated ?? false,
+					});
+					lines.push(
+						theme.fg(
+							"dim",
+							`${statusText} · ↑/↓ select · +/- resize · ${logScrollKeys} · k kill · esc close`,
+						),
+					);
 
 					return lines;
 				}
@@ -529,33 +636,88 @@ export function installDock(
 				return lines;
 			},
 
-			handleMouse(event: TuiMouseEvent): { handled: boolean } | undefined {
+			handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+				const termHeight = resolveTermHeight(tui?.terminal?.rows);
+				const metrics = controller.getLayoutMetrics(termHeight);
+
+				// Active handle drag: pi-tui (viewport TUIs) retargets drag/release
+				// to this component because press returned { capture: true }.
+				if (controller.isHandleDragActive()) {
+					if (event.type === "drag") {
+						if (controller.dragHandleTo(event.screenY, termHeight)) requestRender();
+						return { handled: true };
+					}
+					if (event.type === "release") {
+						controller.endHandleDrag();
+						requestRender();
+						return { handled: true };
+					}
+					// Swallow other events (move, extra presses) mid-drag.
+					return { handled: true };
+				}
+
 				if (event.type === "wheel") {
 					const delta = (event.wheelDelta ?? 0) !== 0 ? (event.wheelDelta! > 0 ? 1 : -1) : 0;
 					if (delta !== 0) {
 						if (controller.isExpanded()) {
-							if ((event.y ?? 0) > 8) {
-								controller.scrollDetail(delta * 2);
+							// Wheel scrolls the region it is over (PRD-007: wheel
+							// scrolls, arrows select); boundaries come from the
+							// layout metrics, not literals.
+							const y = event.y ?? 0;
+							if (y >= metrics.listStart && y < metrics.listEnd) {
+								controller.scrollList(delta, termHeight);
 							} else {
-								controller.move(delta);
+								controller.scrollDetail(delta * 2);
 							}
 						} else {
-							controller.scrollList(delta);
+							controller.scrollList(delta, termHeight);
 						}
-						(capturedTui ?? options.getTui?.())?.requestRender();
+						requestRender();
 						return { handled: true };
 					}
 				}
 
+				// Resize handle: press starts a drag; capture routes the following
+				// drag/release events back here even outside the widget bounds.
+				if (
+					event.type === "press" &&
+					event.button === "left" &&
+					controller.isExpanded() &&
+					(event.y ?? -1) === metrics.handleIndex
+				) {
+					controller.beginHandleDrag(event.screenY, termHeight);
+					return { handled: true, capture: true };
+				}
+
 				if (event.type === "click") {
 					const all = controller.getTasks();
-					const offset = controller.getListOffset();
-					const headerOffset = controller.isExpanded() ? 3 : 0;
-					const clickedIndex = offset + (event.y ?? 0) - headerOffset;
-					if (clickedIndex >= 0 && clickedIndex < all.length) {
-						controller.expandTasks(all[clickedIndex].id);
-						(capturedTui ?? options.getTui?.())?.requestRender();
-						return { handled: true };
+					const y = event.y ?? 0;
+					if (controller.isExpanded()) {
+						// Only clicks on actual list rows select a task; pad rows,
+						// the handle row, and the detail/output panes are inert.
+						if (y >= metrics.listStart && y < metrics.listEnd) {
+							const offset = controller.getListOffset(termHeight);
+							const clickedIndex = offset + (y - metrics.listStart);
+							if (clickedIndex >= 0 && clickedIndex < all.length) {
+								controller.expandTasks(all[clickedIndex].id);
+								requestRender();
+								return { handled: true };
+							}
+						}
+						return undefined;
+					}
+					// Compact dock: task rows start at the top of the widget; the
+					// scroll hint / bottom rule are inert (bounds-checked, so clicks
+					// past the visible rows no longer select hidden tasks).
+					const visibleCount = Math.min(all.length, MAX_DOCK_VISIBLE);
+					if (y >= 0 && y < visibleCount) {
+						const offset = controller.getListOffset(termHeight);
+						const clickedIndex = offset + y;
+						if (clickedIndex >= 0 && clickedIndex < all.length) {
+							controller.expandTasks(all[clickedIndex].id);
+							requestRender();
+							return { handled: true };
+						}
 					}
 				}
 
@@ -594,6 +756,7 @@ export function installDock(
 
 	function dispose(): void {
 		disposed = true;
+		widgetInstalled = false;
 		disableTerminalMouse((capturedTui ?? options.getTui?.()) as unknown as WritableTerminalHost);
 		stopTicker();
 		unsubscribe();
@@ -665,8 +828,15 @@ export function handleDockInput(
 
 	const mouse = parseMouseInput(data);
 	if (mouse.sawMouse) {
+		const tui = getTui?.();
+		// Viewport TUIs (fullscreen mode) parse the raw mouse sequences
+		// themselves and dispatch normalized events to the dock component; they
+		// register their input listener before extensions, so by the time we see
+		// data here it is regular (main-screen) mode — where raw wheel routes by
+		// the keyboard-oriented rules below because widget screen origins are
+		// unknown. PgUp/PgDn remain the log-scroll path in regular mode.
+		if (tui && isViewportTUI(tui)) return undefined;
 		if (mouse.wheelDelta !== 0) {
-			const tui = getTui?.();
 			if (controller.isDetail?.()) {
 				controller.scrollDetail?.(mouse.wheelDelta * 2);
 				tui?.requestRender();
@@ -846,6 +1016,19 @@ export function handleDockInput(
 		} else {
 			controller.exitDock();
 		}
+		tui?.requestRender();
+		return { consume: true };
+	}
+
+	// +/- (or =/_) resizes the master-list pane of the fixed two-panel layout
+	// (PRD-007 Approach A); the output pane absorbs the difference.
+	if (data === "+" || data === "=") {
+		controller.resizeList?.(1, tui?.terminal?.rows);
+		tui?.requestRender();
+		return { consume: true };
+	}
+	if (data === "-" || data === "_") {
+		controller.resizeList?.(-1, tui?.terminal?.rows);
 		tui?.requestRender();
 		return { consume: true };
 	}

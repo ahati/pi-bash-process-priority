@@ -74,7 +74,7 @@ test("formatOutputStatusLine: handles following tail vs scrolled-up state", () =
 		totalBytes: 51200,
 		truncated: false,
 	});
-	assert.equal(scrolledUp, "lines 21–30 of 100 · ↑/↓ PgUp/PgDn scroll · ↓ at bottom follows");
+	assert.equal(scrolledUp, "lines 21–30 of 100 · ↓ end follows");
 });
 
 test("detailLines: showMetadata includes PID, Output, and Size when requested", () => {

@@ -191,7 +191,7 @@ test("dockRow: RHS status is red/green based on status when theme is provided", 
 	assert.ok(failedRow.includes("[error]failed (exit 1)[/error]"), "failed dock row status is red");
 });
 
-test("DockController: /tasks expanded mode brings all tasks and expands up to 40% vertical screen", () => {
+test("DockController: expanded mode uses the fixed two-panel layout (PRD-007 Approach A)", () => {
 	const running = makeTask({ id: "task-1", status: "running" });
 	const completed = makeTask({ id: "task-2", status: "completed", exitCode: 0 });
 	const failed = makeTask({ id: "task-3", status: "failed", exitCode: 1 });
@@ -207,20 +207,42 @@ test("DockController: /tasks expanded mode brings all tasks and expands up to 40
 	assert.equal(controller.getTasks().length, 1);
 	assert.equal(controller.getMaxVisible(30), 3);
 
-	// 2. /tasks expanded mode: all tasks (running, completed, failed)
+	// 2. /tasks expanded mode: all tasks (running, completed, failed).
+	// 30 rows: available = 30 - 6 reserve = 24; budget for L+O = 24 - 15
+	// fixed = 9; default L = ceil(9 * 0.35) = 4, O = 5.
 	assert.equal(controller.expandTasks(), true);
 	assert.equal(controller.isExpanded(), true);
 	assert.equal(controller.getTasks().length, 3);
-	// On a 30-row screen, 40% is Math.floor(30 * 0.4) = 12
-	assert.equal(controller.getMaxVisible(30), 12);
-	// On a 24-row screen, 40% is Math.floor(24 * 0.4) = 9
-	assert.equal(controller.getMaxVisible(24), 9);
+	assert.equal(controller.getMaxVisible(30), 4);
+	assert.equal(controller.getOutputRows(30), 5);
+	const metrics = controller.getLayoutMetrics(30);
+	assert.equal(metrics.totalRows, 24); // 15 fixed + 4 list + 5 output
+	assert.equal(metrics.listStart, 3);
+	assert.equal(metrics.handleIndex, 7);
+	assert.equal(metrics.listEnd, 7);
+	assert.equal(metrics.statusIndex, 23);
 
-	// 3. ESC / collapseTasks returns to normal reduced-list view
+	// 3. Resize: +/- moves rows between the panes within the clamps.
+	assert.equal(controller.resizeList(1, 30), true);
+	assert.equal(controller.getMaxVisible(30), 5);
+	assert.equal(controller.getOutputRows(30), 4);
+	assert.equal(controller.resizeList(99, 30), false); // already at maxListRows
+	assert.equal(controller.getMaxVisible(30), 5);
+	assert.equal(controller.resizeList(-99, 30), true); // clamps at min
+	assert.equal(controller.getMaxVisible(30), 3);
+	assert.equal(controller.getOutputRows(30), 6);
+
+	// 4. Degenerate small terminal: minimum panes, degraded flag.
+	assert.equal(controller.getMaxVisible(24), 3);
+	assert.equal(controller.getOutputRows(24), 4);
+	assert.equal(controller.getLayoutMetrics(24).degraded, true);
+
+	// 5. ESC / collapseTasks returns to normal reduced-list view
 	controller.collapseTasks();
 	assert.equal(controller.isExpanded(), false);
 	assert.equal(controller.getTasks().length, 1);
 	assert.equal(controller.getMaxVisible(30), 3);
+	assert.equal(controller.getOutputRows(30), 0);
 });
 
 test("formatHeaderLine: formats full-width header with title and rules", () => {
@@ -304,9 +326,15 @@ test("merged Master-Detail screen renders master list, details (with Cwd and Log
 	const widget = widgetFactory({ terminal: { rows: 30 }, requestRender() {} }, theme);
 	const lines = widget.render(140);
 
-	// 1. Header & subtitle
-	assert.ok(lines.some((l: string) => l.includes("Background Tasks")));
-	assert.ok(lines.some((l: string) => l.includes("2 tasks  current session branch")));
+	// 1. Header with count hint + subtitle (PRD-007: count moved to the rule)
+	assert.ok(lines.some((l: string) => l.includes("Background Tasks") && l.includes("2 tasks")));
+	assert.ok(lines.some((l: string) => l.includes("current session branch")));
+
+	// Fixed two-panel geometry: 30 rows → 3 header + 4 list + 1 handle
+	// + 1 title + 6 meta + 1 rule + 2 output header + 5 output + 1 status.
+	const metrics = controller.getLayoutMetrics(30);
+	assert.equal(lines.length, metrics.totalRows);
+	assert.ok(lines.some((l: string) => l.includes("drag or +/- to resize")));
 
 	// 2. Both tasks in master list
 	assert.ok(lines.some((l: string) => l.includes("test-alpha") && l.includes("task-1")));
