@@ -18,7 +18,7 @@ function createPassThroughTheme() {
 	};
 }
 
-function renderedSingleLine(component: { render(width: number): string[] }, width = 120): string {
+function renderedSingleLine(component: { render(width: number): readonly string[] }, width = 120): string {
 	return component.render(width).join("").replace(/\s+/g, " ").trim();
 }
 
