@@ -10,11 +10,12 @@ const SGR_MOUSE_RE = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/g;
 /**
  * Split one stdin chunk into single SGR mouse sequences.
  *
- * pi-tui 1.5.0's viewport parser only accepts a chunk that is *exactly* one
- * SGR sequence (`/^\x1b\[<...$/`). A fast mouse drag makes the terminal
- * coalesce several motion reports into one read; the parser then rejects the
- * whole chunk and the moves are silently dropped, which is why dragging felt
- * unresponsive. Splitting the chunk restores one event per dispatch.
+ * pi-tui 1.4–1.6's viewport parser only accepts a chunk that is *exactly* one
+ * SGR sequence (`/^\x1b\[<...$/`; still anchored in 1.6.0). A fast mouse drag
+ * makes the terminal coalesce several motion reports into one read; the parser
+ * then rejects the whole chunk and the moves are silently dropped, which is
+ * why dragging felt unresponsive. Splitting the chunk restores one event per
+ * dispatch.
  *
  * Returns `[data]` unchanged when the chunk holds fewer than two sequences.
  */

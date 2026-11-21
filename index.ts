@@ -27,7 +27,6 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { KeybindingsManager } from "@earendil-works/pi-coding-agent";
 import { buildNiceCommand, resolveConfig, type NiceConfig } from "./src/nice.ts";
 import { probeIonice, probeNice, resolveBinPath } from "./src/probe.ts";
 import { resolveBgConfig, resolveLogDir } from "./src/config.ts";
@@ -39,7 +38,6 @@ import {
 } from "./src/bash-override.ts";
 import { DockController, handleDockInput, installDock } from "./src/ui/dock.ts";
 import { resolveDockMaxHeightShare } from "./src/ui/dock-layout.ts";
-import { DockEditor } from "./src/dock-editor.ts";
 import { formatDuration } from "./src/ui/format.ts";
 import { renderBgNotification } from "./src/ui/notification.ts";
 import type { BgNotificationDetails, BgTask, TaskManagerApi } from "./src/types.ts";
@@ -210,7 +208,8 @@ export default function (pi: ExtensionAPI) {
 				},
 				onTerminal: (task) => {
 					debugLog("onTerminal", task);
-					appendTaskState("terminal", task);
+					// The terminal bg-task-state entry is appended by onTransition;
+					// this hook only emits the follow-up notification.
 					const details: BgNotificationDetails = {
 						kind: "terminal",
 						task,

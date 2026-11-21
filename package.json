@@ -8,6 +8,7 @@
     "index.ts",
     "src",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE",
     "docs"
   ],

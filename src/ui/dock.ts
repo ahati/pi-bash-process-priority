@@ -449,10 +449,11 @@ interface DockWidget {
 }
 
 /**
- * pi-tui 1.5.0 workaround: its viewport input parser only accepts a chunk that
- * is exactly one SGR mouse sequence. Terminals coalesce fast drag motion into
- * a single stdin read, so most drag reports were dropped and dragging felt
- * unresponsive. Split such chunks before the parser sees them.
+ * pi-tui 1.4–1.6 workaround (still present in 1.6.0): its viewport input
+ * parser only accepts a chunk that is exactly one SGR mouse sequence.
+ * Terminals coalesce fast drag motion into a single stdin read, so most drag
+ * reports were dropped and dragging felt unresponsive. Split such chunks
+ * before the parser sees them.
  *
  * Returns a restore function (or undefined when the host exposes no hook).
  */
